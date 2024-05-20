@@ -1,0 +1,2 @@
+# Allow k3s user root privileges
+k3s	ALL=(ALL:ALL) NOPASSWD:ALL
