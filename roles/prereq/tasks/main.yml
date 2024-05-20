@@ -63,3 +63,16 @@
     path: /etc/sudoers
     validate: 'visudo -cf %s'
   when: ansible_os_family == "RedHat"
+
+- name: Install required packages
+  apt:
+    name:
+      - open-iscsi # required by longhorn
+      - nfs-common # required for nfs support
+
+# https://longhorn.io/kb/troubleshooting-volume-with-multipath/
+- name: Disable multipath (for longhorn volumes)
+  copy:
+    src: multipath.conf
+    dest: /etc/multipath.conf
+  notify: Restart multipathd

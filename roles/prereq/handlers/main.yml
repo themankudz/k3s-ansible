@@ -1,0 +1,5 @@
+---
+- name: Restart multipathd
+  service:
+    name: multipathd
+    state: restarted
