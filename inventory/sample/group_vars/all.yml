@@ -81,3 +81,32 @@ proxmox_lxc_ct_ids:
   - 202
   - 203
   - 204
+
+
+# use to set up postfix on the k3s servers and enable unattended upgrades to send email notifications
+# separarate playbook setup-mail.yaml needs to be called
+# these settings are compatible with Amazon SES
+
+
+# Domain you are sending emails from - must be configured in your relay
+mail_hostname: mydomainname.com
+
+# Enable Authentication to your relay
+smtp_sasl_auth_enable: yes
+
+# Relay Host
+smtp_relayhost: email_relay_host.com
+
+# SMTP Server credentials
+smtp_servers:
+   - host:  smtp_server1
+     key: smtp_server_user:smtpserver1_api_key
+   - host:  smtp_server1
+     key: smtp_server_user2:smtpserver2_api_key
+
+# Unattended Upgrades configuration see '/etc/apt/apt.conf.d/50unattended-upgrades'
+# Notification email - 'Unattended-Upgrade::Mail'
+unattended_upgrades_mail: my_email@domain.com
+# Trigger for email - 'Unattended-Upgrade::MailReport', possible values are "always", "only-on-error" or "on-change"
+unattended_upgrades_mail_trigger: on-change
+

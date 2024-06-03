@@ -1,0 +1,93 @@
+---
+- name: set response file for postfix for unattended install - mailname
+  shell: echo "postfix postfix/mailname string `cat /etc/hostname`.{{mail_hostname}}" | debconf-set-selections
+  tags: install
+
+- name: set response file for postfix for unattended install - mailer_type
+  shell: echo "postfix postfix/main_mailer_type string 'Internet Site'" | debconf-set-selections
+  tags: install
+
+- name: Install required packages
+  apt:
+    name:
+      - postfix
+      - mutt
+      - mailutils
+  tags: install
+
+- name: Update postfix configuration [smtp_sasl_password_maps]
+  lineinfile:
+    line: 'smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd'
+    regexp: "^smtp_sasl_password_maps.*"
+    state: present
+    insertafter: EOF
+    path: /etc/postfix/main.cf
+
+- name: Update postfix configuration [smtp_sasl_security_options]
+  lineinfile:
+    line: 'smtp_sasl_security_options = noanonymous'
+    regexp: "^smtp_sasl_security_options.*"
+    state: present
+    insertafter: EOF
+    path: /etc/postfix/main.cf
+
+- name: Update postfix configuration [smtp_sasl_auth_enable]
+  lineinfile:
+    line: 'smtp_sasl_auth_enable = {{smtp_sasl_auth_enable}}'
+    regexp: "^smtp_sasl_auth_enable.*"
+    state: present
+    insertafter: EOF
+    path: /etc/postfix/main.cf
+
+- name: Update postfix configuration [myorigin]
+  lineinfile:
+    line: 'myorigin = /etc/mailname'
+    regexp: "^myorigin.*"
+    state: present
+    insertafter: EOF
+    path: /etc/postfix/main.cf
+
+- name: Update postfix configuration [relayhost]
+  lineinfile:
+    line: 'relayhost = {{smtp_relayhost}}'
+    regexp: "^relayhost.*"
+    state: present
+    insertafter: EOF
+    path: /etc/postfix/main.cf
+
+- name: Copy sasl File to host
+  template:
+    src: sasl_passwd.j2
+    dest: /etc/postfix/sasl_passwd_2
+  tags: sasl_passwd
+
+- name: run postmap on sasl_passwd
+  shell: postmap /etc/postfix/sasl_passwd
+
+- name: restart postfix
+  ansible.builtin.systemd_service:
+    state: restarted
+    daemon_reload: true
+    name: postfix
+
+- name: send test emails
+  command: 'echo test | mutt -s "{{ansible_hostname}} test" {{unattended_upgrades_mail}}'
+
+- name: Enable emails on unattended upgrades
+  lineinfile:
+    line: 'Unattended-Upgrade::Mail "{{unattended_upgrades_mail}}";'
+    regexp: "^(\/\/\\s*)?Unattended-Upgrade::Mail .*"
+    state: present
+    insertafter: EOF
+    path: /etc/apt/apt.conf.d/50unattended-upgrades
+  tags: unattended
+
+- name: Enable emails on unattended upgrades when changed
+  lineinfile:
+    line: 'Unattended-Upgrade::MailReport "{{unattended_upgrades_mail_trigger}}";'
+    regexp: "^(\/\/\\s*)?Unattended-Upgrade::MailReport.*"
+    state: present
+    insertafter: EOF
+    path: /etc/apt/apt.conf.d/50unattended-upgrades
+  tags: unattended
+
