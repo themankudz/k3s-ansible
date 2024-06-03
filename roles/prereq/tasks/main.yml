@@ -69,10 +69,13 @@
     name:
       - open-iscsi # required by longhorn
       - nfs-common # required for nfs support
+  tags: longhorn
 
 # https://longhorn.io/kb/troubleshooting-volume-with-multipath/
 - name: Disable multipath (for longhorn volumes)
   copy:
     src: multipath.conf
     dest: /etc/multipath.conf
+    backup: true
   notify: Restart multipathd
+  tags: longhorn
