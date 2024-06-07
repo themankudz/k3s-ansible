@@ -58,7 +58,7 @@
 - name: Copy sasl File to host
   template:
     src: sasl_passwd.j2
-    dest: /etc/postfix/sasl_passwd_2
+    dest: /etc/postfix/sasl_passwd
   tags: sasl_passwd
 
 - name: run postmap on sasl_passwd
