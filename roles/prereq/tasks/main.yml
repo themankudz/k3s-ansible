@@ -83,3 +83,26 @@
     backup: true
   notify: Restart multipathd
   tags: longhorn
+
+- name: Create data directory
+  file:
+    path: /data/k3s/
+    state: directory
+    mode: '0750'
+
+- name: Add Custom kubelet config file
+  copy:
+    src: kubelet.config
+    dest: /data/k3s/kubelet.config
+    backup: true
+
+- name: Update unattended upgrades inhibit delay 90 seconds
+  lineinfile:
+    line: InhibitDelayMaxSec=90
+    regexp: "^InhibitDelayMaxSec.*"
+    state: present
+    insertafter: EOF
+    path: /usr/lib/systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf
+  tags: inhibit
+
+  

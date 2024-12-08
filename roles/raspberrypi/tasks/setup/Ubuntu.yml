@@ -11,3 +11,4 @@
   apt:
     name: linux-modules-extra-raspi
     state: present
+  when : ansible_distribution_version == "22.04"
