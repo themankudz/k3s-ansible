@@ -4,6 +4,14 @@
     name: "{{ system_timezone }}"
   when: (system_timezone is defined) and (system_timezone != "Your/Timezone")
 
+- name: Add Proxy settings to add apt-cacher
+  template:
+    src: apt-proxy
+    dest: /etc/apt/apt.conf.d/00aptproxy
+  tags: apt-cacher
+  when: ansible_os_family == "Debian" and (apt_proxy_http_url is defined)
+
+
 - name: Set SELinux to disabled state
   ansible.posix.selinux:
     state: disabled

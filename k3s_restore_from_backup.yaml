@@ -1,0 +1,148 @@
+---
+- name: K3s HA Cluster Restoration
+  hosts: all
+  gather_facts: no
+  become: yes
+
+  vars:
+    # --- CONFIGURATION (Ensure these paths are correct for your system) ---
+    backup_base_dir: /mnt/user/appdata/backups
+    k3s_data_dir: /var/lib/rancher/k3s
+    k3s_token_path: "{{ k3s_data_dir }}/server/token"
+    k3s_bin: /usr/local/bin/k3s
+    # --- VARIABLE TO SET BEFORE RUNNING ---
+    # YOU MUST PROVIDE THE EXACT NAME of the backup directory on the command line, e.g.:
+    # ansible-playbook k3s_ha_restore.yml -e "restore_backup_name=k3s_backup_20251207_195951"
+    restore_backup_name: "{{ restore_backup_name | default('') }}"
+
+
+  pre_tasks:
+    - name: Fail if restore_backup_name is not defined
+      ansible.builtin.fail:
+        msg: "The 'restore_backup_name' variable must be set to the exact backup directory name."
+      when: restore_backup_name | length == 0
+
+# ==============================================================================
+# PLAY 1: RESTORE PRIMARY SERVER (k3s-5)
+# This play stops K3s, performs the cluster-reset using the snapshot, and restarts.
+# ==============================================================================
+- name: PLAY 1 - Restore Primary Server Node (k3s-5)
+  hosts: k3s-5
+  gather_facts: no
+  become: yes
+  vars:
+    backup_path: "{{ backup_base_dir }}/{{ restore_backup_name }}"
+
+  tasks:
+    - name: 1. Stop k3s service on the primary node
+      ansible.builtin.systemd:
+        name: k3s
+        state: stopped
+
+    - name: 2. Find the etcd snapshot file for restoration (the *.zip file)
+      ansible.builtin.find:
+        paths: "{{ backup_path }}"
+        patterns: "*.zip"
+        use_regex: true
+      register: snapshot_result
+
+    - name: 3. Set fact for snapshot file path
+      ansible.builtin.set_fact:
+        snapshot_path: "{{ snapshot_result.files[0].path }}"
+      when: snapshot_result.files | length > 0
+
+    - name: 4. Perform cluster reset and restore from snapshot
+      ansible.builtin.shell: |
+        {{ k3s_bin }} server \
+        --cluster-reset \
+        --cluster-reset-restore-path="{{ snapshot_path }}" \
+        --data-dir="{{ k3s_data_dir }}"
+      args:
+        executable: /bin/bash
+      when: snapshot_path is defined
+      register: restore_output
+
+    - name: 5. Copy the server token from backup to k3s data directory
+      # This token is critical for secrets and agent re-joining
+      ansible.builtin.copy:
+        src: "{{ backup_path }}/k3s_server_token.txt"
+        dest: "{{ k3s_token_path }}"
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: 6. Start k3s service on the restored primary node
+      ansible.builtin.systemd:
+        name: k3s
+        state: started
+
+    - name: 7. Wait for K3s to be ready (30 seconds)
+      ansible.builtin.wait_for:
+        timeout: 30
+
+    - name: 8. Verify primary node status
+      ansible.builtin.shell: "{{ k3s_bin }} kubectl get nodes k3s-5"
+      register: node_status
+      changed_when: false
+    
+    - name: Display primary node status
+      ansible.builtin.debug:
+        msg: "Primary node k3s-5 status: {{ node_status.stdout_lines | last }}"
+      
+# ==============================================================================
+# PLAY 2: REJOIN SECONDARY SERVER NODES (k3s-6, k3s-7)
+# This play targets all other 'master' hosts that are NOT the primary (k3s-5).
+# ==============================================================================
+- name: PLAY 2 - Rejoin Secondary Server Nodes
+  # Targets all nodes in the 'master' group except k3s-5
+  hosts: master:!k3s-5
+  gather_facts: no
+  become: yes
+
+  tasks:
+    - name: 1. Stop k3s service on secondary node
+      ansible.builtin.systemd:
+        name: k3s
+        state: stopped
+
+    - name: 2. Delete old etcd data (wipe the node's cluster state)
+      # WARNING: This deletes the entire etcd database directory on the secondary node
+      ansible.builtin.file:
+        path: "{{ k3s_data_dir }}/server/db"
+        state: absent
+
+    - name: 3. Start k3s service (forces node to re-join and sync state from k3s-5)
+      ansible.builtin.systemd:
+        name: k3s
+        state: started
+        
+    - name: 4. Wait for K3s service to stabilize (10 seconds)
+      ansible.builtin.wait_for:
+        timeout: 10
+
+# ==============================================================================
+# PLAY 3: FINAL VERIFICATION
+# ==============================================================================
+- name: PLAY 3 - Final Cluster Verification
+  hosts: k3s-5
+  gather_facts: no
+  become: yes
+
+  tasks:
+    - name: Wait for all server nodes to return to Ready state (up to 3 minutes)
+      ansible.builtin.shell: "{{ k3s_bin }} kubectl get nodes --selector='node-role.kubernetes.io/control-plane=true'"
+      register: final_check
+      until: final_check.stdout.find(' Ready ') != -1 and final_check.stdout_lines | length == 4
+      retries: 30
+      delay: 6
+      changed_when: false
+
+    - name: Display final cluster status
+      ansible.builtin.debug:
+        msg: |
+          🎉 Restoration Complete!
+          All server nodes (k3s-5, k3s-6, k3s-7) should now be in a 'Ready' state.
+          
+          --- Final Node Status ---
+          {{ final_check.stdout }}
+          -------------------------
