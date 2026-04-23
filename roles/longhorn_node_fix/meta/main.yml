@@ -1,0 +1,9 @@
+---
+argument_specs:
+  main:
+    short_description: Longhorn node fixes
+    description: >
+      Applies OS-level fixes required for stable Longhorn iSCSI operation on
+      cluster nodes. Currently prevents probe-bcache from hanging on Longhorn
+      iSCSI volumes, which can cascade into node lockups when iSCSI sessions
+      are disrupted.

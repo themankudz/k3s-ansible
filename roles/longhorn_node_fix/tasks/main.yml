@@ -1,0 +1,31 @@
+---
+# Prevents probe-bcache from hanging on Longhorn iSCSI volumes.
+#
+# When a Longhorn iSCSI session drops, the bcache udev rule (69-bcache.rules)
+# spawns probe-bcache against the device. probe-bcache blocks trying to read a
+# disrupted iSCSI block device, times out after ~107s, gets killed, then udev
+# immediately retries — creating an endless loop that exhausts udev workers,
+# causes memory pressure, kills journald, and ultimately locks up the node.
+#
+# The fix: a higher-priority udev rule that sets ID_FS_TYPE to a non-empty
+# value for Longhorn iSCSI volumes only. 69-bcache.rules bails out early when
+# ID_FS_TYPE is already set, skipping the probe-bcache call entirely.
+
+- name: Install udev rule to skip bcache probing on Longhorn iSCSI volumes
+  ansible.builtin.copy:
+    dest: /etc/udev/rules.d/60-longhorn-no-bcache.rules
+    content: |
+      # Skip probe-bcache for Longhorn iSCSI volumes.
+      # Longhorn IQNs match iqn.2019-10.io.longhorn:pvc-*
+      # ID_PATH for these devices is: ip-<target-ip>:3260-iscsi-iqn.2019-10.io.longhorn:*
+      # Setting ID_FS_TYPE to a non-empty value causes 69-bcache.rules to jump
+      # to bcache_backing_end, skipping the probe-bcache call that hangs on
+      # disrupted iSCSI sessions.
+      SUBSYSTEM=="block", ENV{ID_PATH}=="ip-*-iscsi-iqn.2019-10.io.longhorn:*", ENV{ID_FS_TYPE}="not-bcache"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload udev rules
+
+- name: Flush udev rule handlers immediately
+  ansible.builtin.meta: flush_handlers

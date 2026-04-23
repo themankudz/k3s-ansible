@@ -103,6 +103,7 @@
     src: kubelet.config
     dest: /data/k3s/kubelet.config
     backup: true
+  notify: Restart k3s
 
 - name: Update unattended upgrades inhibit delay 90 seconds
   lineinfile:

@@ -1,0 +1,43 @@
+---
+# Rolls out kubelet config changes to a live cluster one node at a time.
+# Agents restart immediately; masters restart after agents to preserve
+# cluster availability.
+- name: Update kubelet config on agent nodes
+  hosts: node
+  gather_facts: true
+  become: true
+  serial: 1
+  environment: "{{ proxy_env | default({}) }}"
+  tasks:
+    - name: Deploy kubelet config
+      ansible.builtin.copy:
+        src: roles/prereq/files/kubelet.config
+        dest: /data/k3s/kubelet.config
+        backup: true
+      notify: Restart k3s-node
+
+  handlers:
+    - name: Restart k3s-node
+      ansible.builtin.service:
+        name: k3s-node
+        state: restarted
+
+- name: Update kubelet config on master nodes
+  hosts: master
+  gather_facts: true
+  become: true
+  serial: 1
+  environment: "{{ proxy_env | default({}) }}"
+  tasks:
+    - name: Deploy kubelet config
+      ansible.builtin.copy:
+        src: roles/prereq/files/kubelet.config
+        dest: /data/k3s/kubelet.config
+        backup: true
+      notify: Restart k3s
+
+  handlers:
+    - name: Restart k3s
+      ansible.builtin.service:
+        name: k3s
+        state: restarted
