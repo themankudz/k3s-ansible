@@ -1,0 +1,6 @@
+---
+galaxy_info:
+  role_name: node_storage
+  description: Format and mount Longhorn data disk; add Unraid NFS share mounts
+  min_ansible_version: "2.11"
+dependencies: []

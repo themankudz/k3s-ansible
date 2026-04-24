@@ -1,0 +1,15 @@
+---
+# Set to the block device to format and mount for Longhorn storage.
+# Leave empty to skip dedicated disk setup (Longhorn will use the OS disk at /var/lib/longhorn).
+node_storage_longhorn_disk: ""
+node_storage_longhorn_mount: /var/lib/longhorn
+
+# Unraid NFS mounts — replace virtiofs /mnt/user/ on workload cluster nodes.
+# Set node_storage_nfs_server to the Unraid IP; leave node_storage_nfs_mounts empty to skip.
+node_storage_nfs_server: ""
+node_storage_nfs_mounts: []
+# Each entry:
+#   share:      NFS export path on the server  (e.g. /mnt/user/k3s)
+#   mountpoint: Local path on the node         (e.g. /mnt/user/k3s)
+#   options:    Optional mount options override (default below)
+node_storage_nfs_default_options: "defaults,nofail,x-systemd.automount,soft,timeo=30,retrans=3"

@@ -1,0 +1,65 @@
+---
+# --- Longhorn dedicated disk ---
+
+- name: node_storage | Check if Longhorn disk is already formatted
+  ansible.builtin.command: blkid -o value -s TYPE {{ node_storage_longhorn_disk }}
+  register: _longhorn_disk_type
+  changed_when: false
+  failed_when: false
+  when: node_storage_longhorn_disk != ""
+
+- name: node_storage | Format Longhorn disk as ext4
+  community.general.filesystem:
+    fstype: ext4
+    dev: "{{ node_storage_longhorn_disk }}"
+    opts: "-L longhorn"
+  when:
+    - node_storage_longhorn_disk != ""
+    - _longhorn_disk_type.stdout == ""
+
+- name: node_storage | Get UUID of Longhorn disk
+  ansible.builtin.command: blkid -o value -s UUID {{ node_storage_longhorn_disk }}
+  register: _longhorn_uuid
+  changed_when: false
+  when: node_storage_longhorn_disk != ""
+
+- name: node_storage | Create Longhorn mount point
+  ansible.builtin.file:
+    path: "{{ node_storage_longhorn_mount }}"
+    state: directory
+    mode: "0755"
+  when: node_storage_longhorn_disk != ""
+
+- name: node_storage | Mount Longhorn disk and add fstab entry
+  ansible.posix.mount:
+    path: "{{ node_storage_longhorn_mount }}"
+    src: "UUID={{ _longhorn_uuid.stdout }}"
+    fstype: ext4
+    opts: defaults
+    passno: "2"
+    state: mounted
+  when: node_storage_longhorn_disk != ""
+
+# --- Unraid NFS mounts ---
+
+- name: node_storage | Create NFS mount points
+  ansible.builtin.file:
+    path: "{{ item.mountpoint }}"
+    state: directory
+    mode: "0755"
+  loop: "{{ node_storage_nfs_mounts }}"
+  when: node_storage_nfs_mounts | length > 0
+
+- name: node_storage | Mount Unraid NFS shares and add fstab entries
+  ansible.posix.mount:
+    path: "{{ item.mountpoint }}"
+    src: "{{ node_storage_nfs_server }}:{{ item.share }}"
+    fstype: nfs
+    opts: "{{ item.options | default(node_storage_nfs_default_options) }}"
+    dump: "0"
+    passno: "0"
+    state: mounted
+  loop: "{{ node_storage_nfs_mounts }}"
+  when:
+    - node_storage_nfs_mounts | length > 0
+    - node_storage_nfs_server != ""

@@ -36,6 +36,8 @@
       when: custom_registries
     - role: longhorn_node_fix
       become: true
+    - role: node_storage
+      become: true
 
 - name: Setup k3s servers
   hosts: master
