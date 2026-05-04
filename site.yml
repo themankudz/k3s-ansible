@@ -64,9 +64,9 @@
   hosts: master
   environment: "{{ proxy_env | default({}) }}"
   tasks:
-    - name: Copying kubeconfig from {{ hostvars[groups[group_name_master | default('master')][0]]['ansible_hostname'] }}
+    - name: Copying kubeconfig from {{ hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_hostname'] }}
       ansible.builtin.fetch:
         src: "{{ ansible_user_dir }}/.kube/config"
         dest: ./kubeconfig
         flat: true
-      when: ansible_hostname == hostvars[groups[group_name_master | default('master')][0]]['ansible_hostname']
+      when: ansible_hostname == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_hostname']

@@ -17,7 +17,7 @@ Ansible-based automation for deploying a k3s Kubernetes homelab cluster with kub
 **Current Configuration**:
 - **k3s version**: v1.33.6+k3s1
 - **API Endpoint (VIP)**: 192.168.50.200
-- **MetalLB IP Range**: 192.168.50.202-192.168.50.254
+- **MetalLB IP Range**: 192.168.50.202-192.168.50.227 (homelab-cluster); 192.168.50.228-192.168.50.254 (workload-cluster)
 - **CNI**: Flannel (eth0 interface)
 - **Custom Registry**: Harbor at harbor.homecluster.co (caching docker.io, ghcr.io, quay.io, registry.k8s.io)
 - **Master Taint**: Disabled (masters can run workloads)
@@ -50,9 +50,46 @@ ansible-playbook reboot.yml -i inventory/homelab-cluster/hosts.ini
 
 # Restore from backup
 ansible-playbook k3s_restore_from_backup.yaml -i inventory/homelab-cluster/hosts.ini
+
+# Set up postfix/unattended-upgrade email notifications
+ansible-playbook setup-mail.yml -i inventory/homelab-cluster/hosts.ini
 ```
 
+After `site.yml` completes, `./kubeconfig` is written to the repo root (gitignored) containing the cluster kubeconfig with the VIP endpoint.
+
 **Note**: `ansible.cfg` points to `inventory/homeserver-cluster/hosts.ini` which doesn't exist. Always pass `-i inventory/homelab-cluster/hosts.ini` explicitly.
+
+### Linting
+
+```bash
+# Run all pre-commit hooks (yamllint, ansible-lint, shellcheck, whitespace checks)
+pre-commit run --all-files
+
+# Install hooks so they run automatically on commit
+pre-commit install
+
+# Run ansible-lint alone
+ansible-lint
+
+# Run yamllint alone
+yamllint .
+```
+
+ansible-lint runs with `profile: production`. The only suppressed rule is `var-naming[no-role-prefix]`.
+
+### Upgrading k3s
+
+To upgrade to a new k3s version (or bump kube-vip/MetalLB), update the version variables in `inventory/homelab-cluster/group_vars/all.yml`, then do a rolling upgrade:
+
+```bash
+# Masters one at a time (preserves etcd quorum)
+ansible-playbook site.yml -i inventory/homelab-cluster/hosts.ini --limit master --serial 1
+
+# Workers in small batches
+ansible-playbook site.yml -i inventory/homelab-cluster/hosts.ini --limit node --serial 2
+```
+
+Pre-upgrade: snapshot etcd from a master node — `sudo k3s etcd-snapshot save --name pre-upgrade-$(date +%Y%m%d)`. See `upgrade-plan.md` for the full checklist.
 
 ---
 
@@ -60,23 +97,17 @@ ansible-playbook k3s_restore_from_backup.yaml -i inventory/homelab-cluster/hosts
 
 ### Node Topology
 
-**Master Nodes** (3 — HA embedded etcd):
+**Control-Plane Nodes** (3 — all Pi5 NVMe, HA embedded etcd):
 | Node | IP | Hardware | Disk |
 |------|----|----------|------|
-| k3s-5 | 192.168.50.108 | Unraid host | Large (102G free) |
-| k3s-6 | 192.168.50.138 | Raspberry Pi 5 | Large (322G free) |
-| k3s-7 | 192.168.50.97 | Raspberry Pi 5 | Large (368G free) |
+| k3s-1 | 192.168.50.115 | Raspberry Pi 5 + NVMe | Large (339G free) |
+| k3s-6 | 192.168.50.138 | Raspberry Pi 5 + NVMe | Large (322G free) |
+| k3s-7 | 192.168.50.97 | Raspberry Pi 5 + NVMe | Large (368G free) |
 
-**Worker Nodes** (5):
+**Worker Nodes** (1 — temporary, scheduled for removal after Proxmox migration):
 | Node | IP | Hardware | Disk | Notes |
 |------|----|----------|------|-------|
-| k3s-1 | 192.168.50.115 | Raspberry Pi 5 | Large (339G free) | |
-| k3s-2 | 192.168.50.92 | Raspberry Pi 4 | SD card ~28GB (74% used) | ⚠ Watch disk usage |
-| k3s-3 | 192.168.50.146 | Unraid host | Large (98G free) | |
-| k3s-4 | 192.168.50.72 | Raspberry Pi 4 | SD card ~28GB (79% used) | ⚠ Watch disk usage |
-| k3s-8 | 192.168.50.179 | x86 host | Large (113G free) | |
-
-**k3s-2 and k3s-4** are the only nodes running the OS from SD cards. They are more susceptible to instability under I/O load. If disk usage approaches 90%, the soft eviction threshold (10%) will trigger pod evictions.
+| k3s-8 | 192.168.50.179 | x86 host | Large (113G free) | Leaving cluster when migrated to Proxmox |
 
 ### k3s Service Names (for manual intervention)
 - Masters: `k3s` (systemd unit: `k3s.service`)
@@ -95,6 +126,7 @@ ansible-playbook k3s_restore_from_backup.yaml -i inventory/homelab-cluster/hosts
 | **k3s_server** | Deploy k3s control plane with kube-vip v1.0.2 and MetalLB v0.15.3 |
 | **k3s_agent** | Join worker nodes to cluster |
 | **k3s_server_post** | Configure MetalLB Layer2 mode |
+| **node_storage** | Format and mount a dedicated Longhorn disk (`node_storage_longhorn_disk`) and/or mount Unraid NFS shares (`node_storage_nfs_mounts`). Defaults are empty (skip). Configure per-node or per-group in host/group vars. |
 | **longhorn_node_fix** | OS-level fixes for stable Longhorn operation (see below) |
 | **reset** | Complete cluster teardown |
 
@@ -102,7 +134,7 @@ ansible-playbook k3s_restore_from_backup.yaml -i inventory/homelab-cluster/hosts
 
 Deploys `/etc/udev/rules.d/60-longhorn-no-bcache.rules` on all nodes.
 
-**Why it exists**: Ubuntu ships a udev rule (`69-bcache.rules`) that runs `probe-bcache` on every block device including Longhorn iSCSI volumes. When an iSCSI session drops, `probe-bcache` hangs indefinitely, gets killed by udev after ~107s, then immediately respawns — an endless loop that exhausts udev workers, causes memory pressure, kills journald, and locks up the node. k3s-2 and k3s-4 both suffered this failure on 2026-03-26.
+**Why it exists**: Ubuntu ships a udev rule (`69-bcache.rules`) that runs `probe-bcache` on every block device including Longhorn iSCSI volumes. When an iSCSI session drops, `probe-bcache` hangs indefinitely, gets killed by udev after ~107s, then immediately respawns — an endless loop that exhausts udev workers, causes memory pressure, kills journald, and locks up the node. k3s-2 and k3s-4 both suffered this failure on 2026-03-26 (both nodes have since been removed from the cluster; the udev rule remains deployed on all surviving nodes as defence-in-depth).
 
 **What the rule does**: Sets `ID_FS_TYPE=not-bcache` for any block device whose `ID_PATH` matches `ip-*-iscsi-iqn.2019-10.io.longhorn:*`. This causes `69-bcache.rules` to bail out before calling `probe-bcache`. Scoped specifically to Longhorn IQNs — does not affect local disks on any node type.
 
@@ -112,10 +144,13 @@ Deploys `/etc/udev/rules.d/60-longhorn-no-bcache.rules` on all nodes.
 
 ### Inventory
 
-Active inventory: `inventory/homelab-cluster/`
+Two active inventories:
+
+- `inventory/homelab-cluster/` — homelab cluster, 4 nodes: k3s-1/6/7 (Pi5, control-plane) + k3s-8 (x86 worker, temporary) (VIP: 192.168.50.200, pod CIDR: 10.52.0.0/16)
+- `inventory/workload-cluster/` — second cluster for heavier workloads (VIP: 192.168.50.201, pod CIDR: 10.53.0.0/16, dedicated `/dev/vdb` Longhorn disk and Unraid NFS mounts pre-configured)
 
 ```
-inventory/homelab-cluster/
+inventory/<cluster>/
 ├── hosts.ini          # Node definitions and group hierarchy
 └── group_vars/
     └── all.yml        # All cluster config (k3s version, VIP, extra_args, etc.)
@@ -143,10 +178,11 @@ ansible-playbook update-kubelet-config.yml -i inventory/homelab-cluster/hosts.in
 
 - SSH user: `k3s`
 - Flannel interface: `eth0`
-- Cluster CIDR: `10.52.0.0/16`
+- Cluster CIDR: `10.52.0.0/16` (homelab-cluster) / `10.53.0.0/16` (workload-cluster)
 - Control plane VIP: `192.168.50.200` (kube-vip ARP mode)
-- MetalLB: Layer2, `192.168.50.202-192.168.50.254`
+- MetalLB: Layer2, `192.168.50.202-192.168.50.227`
 - Apt proxy: `http://192.168.50.220:3142`
+- Unraid server (NFS): `192.168.50.52`
 
 ---
 
@@ -187,7 +223,7 @@ kubectl delete volumeattachment <name>
 
 ```bash
 # Check disk and memory across all nodes
-for node in 192.168.50.115 192.168.50.92 192.168.50.146 192.168.50.72 192.168.50.108 192.168.50.138 192.168.50.97 192.168.50.179; do
+for node in 192.168.50.115 192.168.50.138 192.168.50.97 192.168.50.179; do
   echo "=== $(ssh k3s@$node hostname) ==="
   ssh k3s@$node "free -m | awk '/Mem:/{print \"mem available: \"\$7\"Mi\"}'; df -h / | awk 'NR==2{print \"disk: \"\$4\" free (\"\$5\" used)\"}'"
 done

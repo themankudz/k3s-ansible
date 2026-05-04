@@ -23,11 +23,11 @@
       when: restore_backup_name | length == 0
 
 # ==============================================================================
-# PLAY 1: RESTORE PRIMARY SERVER (k3s-5)
+# PLAY 1: RESTORE PRIMARY SERVER (k3s-6)
 # This play stops K3s, performs the cluster-reset using the snapshot, and restarts.
 # ==============================================================================
-- name: PLAY 1 - Restore Primary Server Node (k3s-5)
-  hosts: k3s-5
+- name: PLAY 1 - Restore Primary Server Node (k3s-6)
+  hosts: k3s-6
   gather_facts: no
   become: yes
   vars:
@@ -81,21 +81,21 @@
         timeout: 30
 
     - name: 8. Verify primary node status
-      ansible.builtin.shell: "{{ k3s_bin }} kubectl get nodes k3s-5"
+      ansible.builtin.shell: "{{ k3s_bin }} kubectl get nodes k3s-6"
       register: node_status
       changed_when: false
-    
+
     - name: Display primary node status
       ansible.builtin.debug:
-        msg: "Primary node k3s-5 status: {{ node_status.stdout_lines | last }}"
+        msg: "Primary node k3s-6 status: {{ node_status.stdout_lines | last }}"
       
 # ==============================================================================
 # PLAY 2: REJOIN SECONDARY SERVER NODES (k3s-6, k3s-7)
 # This play targets all other 'master' hosts that are NOT the primary (k3s-5).
 # ==============================================================================
 - name: PLAY 2 - Rejoin Secondary Server Nodes
-  # Targets all nodes in the 'master' group except k3s-5
-  hosts: master:!k3s-5
+  # Targets all nodes in the 'master' group except k3s-6 (the primary restore node)
+  hosts: master:!k3s-6
   gather_facts: no
   become: yes
 
@@ -111,7 +111,7 @@
         path: "{{ k3s_data_dir }}/server/db"
         state: absent
 
-    - name: 3. Start k3s service (forces node to re-join and sync state from k3s-5)
+    - name: 3. Start k3s service (forces node to re-join and sync state from k3s-6)
       ansible.builtin.systemd:
         name: k3s
         state: started
@@ -124,7 +124,7 @@
 # PLAY 3: FINAL VERIFICATION
 # ==============================================================================
 - name: PLAY 3 - Final Cluster Verification
-  hosts: k3s-5
+  hosts: k3s-6
   gather_facts: no
   become: yes
 
@@ -132,7 +132,7 @@
     - name: Wait for all server nodes to return to Ready state (up to 3 minutes)
       ansible.builtin.shell: "{{ k3s_bin }} kubectl get nodes --selector='node-role.kubernetes.io/control-plane=true'"
       register: final_check
-      until: final_check.stdout.find(' Ready ') != -1 and final_check.stdout_lines | length == 4
+      until: final_check.stdout.find(' Ready ') != -1 and final_check.stdout_lines | length == 3
       retries: 30
       delay: 6
       changed_when: false
@@ -141,7 +141,7 @@
       ansible.builtin.debug:
         msg: |
           🎉 Restoration Complete!
-          All server nodes (k3s-5, k3s-6, k3s-7) should now be in a 'Ready' state.
+          All server nodes (k3s-1, k3s-6, k3s-7) should now be in a 'Ready' state.
           
           --- Final Node Status ---
           {{ final_check.stdout }}
