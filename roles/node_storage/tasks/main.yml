@@ -63,3 +63,42 @@
   when:
     - node_storage_nfs_mounts | length > 0
     - node_storage_nfs_server != ""
+
+# --- NFS stale-mount watchdog ---
+# Soft NFS mounts can go stale when the server has a brief outage without
+# rebooting (e.g. Unraid parity checks). This timer detects and remounts them.
+
+- name: node_storage | Deploy NFS stale-mount remount script
+  ansible.builtin.template:
+    src: nfs-remount.sh.j2
+    dest: /usr/local/bin/nfs-remount.sh
+    owner: root
+    group: root
+    mode: "0755"
+  when: node_storage_nfs_mounts | length > 0
+
+- name: node_storage | Deploy nfs-remount systemd service unit
+  ansible.builtin.template:
+    src: nfs-remount.service.j2
+    dest: /etc/systemd/system/nfs-remount.service
+    owner: root
+    group: root
+    mode: "0644"
+  when: node_storage_nfs_mounts | length > 0
+
+- name: node_storage | Deploy nfs-remount systemd timer unit
+  ansible.builtin.template:
+    src: nfs-remount.timer.j2
+    dest: /etc/systemd/system/nfs-remount.timer
+    owner: root
+    group: root
+    mode: "0644"
+  when: node_storage_nfs_mounts | length > 0
+
+- name: node_storage | Enable and start nfs-remount timer
+  ansible.builtin.systemd:
+    name: nfs-remount.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: node_storage_nfs_mounts | length > 0

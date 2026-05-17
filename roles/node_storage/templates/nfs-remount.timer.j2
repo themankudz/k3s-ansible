@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic NFS stale mount check
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=nfs-remount.service
+
+[Install]
+WantedBy=timers.target
