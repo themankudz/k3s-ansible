@@ -76,6 +76,7 @@
     group: root
     mode: "0755"
   when: node_storage_nfs_mounts | length > 0
+  tags: nfs_watchdog
 
 - name: node_storage | Deploy nfs-remount systemd service unit
   ansible.builtin.template:
@@ -85,6 +86,7 @@
     group: root
     mode: "0644"
   when: node_storage_nfs_mounts | length > 0
+  tags: nfs_watchdog
 
 - name: node_storage | Deploy nfs-remount systemd timer unit
   ansible.builtin.template:
@@ -94,6 +96,7 @@
     group: root
     mode: "0644"
   when: node_storage_nfs_mounts | length > 0
+  tags: nfs_watchdog
 
 - name: node_storage | Enable and start nfs-remount timer
   ansible.builtin.systemd:
@@ -102,3 +105,4 @@
     state: started
     daemon_reload: true
   when: node_storage_nfs_mounts | length > 0
+  tags: nfs_watchdog
