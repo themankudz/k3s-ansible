@@ -156,7 +156,7 @@ inventory/<cluster>/
     └── all.yml        # All cluster config (k3s version, VIP, extra_args, etc.)
 ```
 
-Group hierarchy in `hosts.ini`: individual nodes → hardware-type groups (`pi-master`, `unraid-workers`, etc.) → role groups (`master`, `node`) → `k3s_cluster`.
+Group hierarchy in `hosts.ini`: individual nodes → hardware-type groups (`pi-master`, `x86-workers`, etc.) → role groups (`master`, `node`) → `k3s_cluster`.
 
 ### Kubelet Config (`roles/prereq/files/kubelet.config`)
 
@@ -234,8 +234,8 @@ ssh k3s@<node-ip> "sudo journalctl -n 50 | grep -E '(probe-bcache|udev-worker|me
 # Check iSCSI sessions on a node
 ssh k3s@<node-ip> "sudo iscsiadm -m session"
 
-# Check SD card errors (Pi 4 nodes: k3s-2, k3s-4)
-ssh k3s@<node-ip> "sudo dmesg -T | grep -E '(mmcblk|mmc|I/O error)' | tail -20"
+# Check NVMe errors (all current nodes are Pi5 + NVMe)
+ssh k3s@<node-ip> "sudo dmesg -T | grep -E '(nvme|I/O error)' | tail -20"
 
 # Check for stuck VolumeAttachments cluster-wide
 kubectl get volumeattachment | grep -v " true "

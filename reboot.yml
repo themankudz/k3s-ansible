@@ -1,10 +1,96 @@
 ---
-- name: Reboot k3s_cluster
+- name: Reboot k3s_cluster one node at a time
   hosts: k3s_cluster
   gather_facts: true
+  # Reboot a single node at a time to preserve etcd quorum and give
+  # Longhorn time to rebuild/rebalance replicas before the next node.
+  serial: 1
+  # kubectl runs locally against the right cluster; set per-inventory in
+  # group_vars/all.yml (homelab-cluster -> homelab, workload-cluster -> workload).
+  vars:
+    longhorn_namespace: longhorn-system
+    # Set to false (e.g. -e longhorn_check=false) for clusters without Longhorn.
+    longhorn_check: true
+    # Extra settle time after the node is Ready and Longhorn is healthy.
+    rebalance_settle_minutes: 1
+    # Cordon + drain the node before rebooting (and uncordon after). On by
+    # default — draining detaches Longhorn volumes cleanly so engines don't keep
+    # stale instance-manager references and get stuck "attaching" on the next
+    # node (DeadlineExceeded on AttachVolume). The extra replica churn is worth
+    # the safety. Disable with -e drain_before_reboot=false.
+    drain_before_reboot: true
+    drain_timeout: 300s
   tasks:
-    - name: Reboot the nodes (and Wait upto 5 mins max)
+    - name: Cordon and drain the node before reboot
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --context {{ kubectl_context }}
+          drain {{ ansible_facts['hostname'] }}
+          --ignore-daemonsets
+          --delete-emptydir-data
+          --timeout={{ drain_timeout }}
+      delegate_to: localhost
+      become: false
+      changed_when: true
+      when: drain_before_reboot | bool
+
+    - name: Reboot the node (and wait up to 5 mins max for it to come back)
       become: true
       ansible.builtin.reboot:
         reboot_command: "{{ custom_reboot_command | default(omit) }}"
         reboot_timeout: 300
+
+    - name: Wait for the k3s service to be running again
+      become: true
+      ansible.builtin.systemd:
+        name: "{{ 'k3s' if inventory_hostname in groups['master'] else 'k3s-node' }}"
+        state: started
+      register: k3s_service_state
+      until: k3s_service_state.status.ActiveState == "active"
+      retries: 30
+      delay: 10
+
+    # The following checks run locally (kubectl is installed on the control host)
+    # against the cluster selected by kubectl_context.
+    - name: Wait for the node to report Ready
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --context {{ kubectl_context }}
+          wait --for=condition=Ready
+          node/{{ ansible_facts['hostname'] }}
+          --timeout=300s
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Uncordon the node so it can schedule workloads again
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --context {{ kubectl_context }}
+          uncordon {{ ansible_facts['hostname'] }}
+      delegate_to: localhost
+      become: false
+      changed_when: true
+      when: drain_before_reboot | bool
+
+    - name: Wait for Longhorn to finish rebuilding (no degraded volumes)
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --context {{ kubectl_context }}
+          -n {{ longhorn_namespace }}
+          get volumes.longhorn.io
+          -o jsonpath={.items[*].status.robustness}
+      delegate_to: localhost
+      become: false
+      register: longhorn_robustness
+      changed_when: false
+      # Treat "no degraded volumes" as healthy; detached volumes report
+      # "unknown" robustness and are not a sign of an in-progress rebuild.
+      until: "'degraded' not in longhorn_robustness.stdout"
+      retries: 60
+      delay: 15
+      when: longhorn_check | bool
+
+    - name: Allow the cluster to settle before the next node
+      ansible.builtin.pause:
+        minutes: "{{ rebalance_settle_minutes }}"
