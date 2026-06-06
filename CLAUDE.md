@@ -126,7 +126,8 @@ Pre-upgrade: snapshot etcd from a master node — `sudo k3s etcd-snapshot save -
 | **k3s_server** | Deploy k3s control plane with kube-vip v1.0.2 and MetalLB v0.15.3 |
 | **k3s_agent** | Join worker nodes to cluster |
 | **k3s_server_post** | Configure MetalLB Layer2 mode |
-| **node_storage** | Format and mount a dedicated Longhorn disk (`node_storage_longhorn_disk`) and/or mount Unraid NFS shares (`node_storage_nfs_mounts`). Defaults are empty (skip). Configure per-node or per-group in host/group vars. |
+| **node_longhorn** | Format and mount a dedicated Longhorn disk (`node_longhorn_disk`). Default is empty (skip). Configure per-node or per-group in host/group vars. |
+| **node_nfs** | Declaratively manage Unraid NFS mounts (`node_nfs_server` + `node_nfs_mounts`) and the `nfs-remount` stale-mount watchdog. The role owns exactly the mounts in `node_nfs_mounts` (tracked via `/var/lib/node_nfs/managed.list`); set the list to `[]` (keeping `node_nfs_server`) to remove all. Empty `node_nfs_server` = no-op. |
 | **longhorn_node_fix** | OS-level fixes for stable Longhorn operation (see below) |
 | **reset** | Complete cluster teardown |
 

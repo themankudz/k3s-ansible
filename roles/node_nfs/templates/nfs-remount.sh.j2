@@ -3,7 +3,7 @@
 # Runs periodically via nfs-remount.timer.
 set -euo pipefail
 
-{% for mount in node_storage_nfs_mounts %}
+{% for mount in node_nfs_mounts %}
 mountpoint="{{ mount.mountpoint }}"
 if findmnt "$mountpoint" > /dev/null 2>&1; then
     if ! timeout 5 stat "$mountpoint" > /dev/null 2>&1; then

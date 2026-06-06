@@ -1,0 +1,5 @@
+---
+# Set to the block device to format and mount for Longhorn storage.
+# Leave empty to skip dedicated disk setup (Longhorn will use the OS disk at /var/lib/longhorn).
+node_longhorn_disk: ""
+node_longhorn_mount: /var/lib/longhorn

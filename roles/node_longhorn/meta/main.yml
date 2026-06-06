@@ -1,0 +1,9 @@
+---
+argument_specs:
+  main:
+    short_description: Dedicated Longhorn disk
+    options:
+      node_longhorn_disk:
+        description: Block device to format (ext4) and mount for Longhorn. Empty skips setup.
+      node_longhorn_mount:
+        description: Mount point for the Longhorn disk.

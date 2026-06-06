@@ -1,0 +1,17 @@
+---
+# NFS server (e.g. Unraid) that this role manages mounts from.
+# Empty string => the role is a complete no-op on the host.
+#
+# This role is declarative: it owns exactly the mounts listed in node_nfs_mounts,
+# tracked via a marked block in /etc/fstab. To REMOVE all NFS mounts, keep
+# node_nfs_server set and set node_nfs_mounts to [] — do NOT unset the server,
+# or the role can no longer reconcile away what it previously created.
+node_nfs_server: ""
+
+# Desired set of NFS mounts. Each entry:
+#   share:      export path on the server      (e.g. /mnt/user/Movies)
+#   mountpoint: local path on the node         (e.g. /mnt/user/Movies)
+#   options:    optional per-mount options override (default below)
+node_nfs_mounts: []
+
+node_nfs_default_options: "defaults,nofail,x-systemd.automount,soft,timeo=30,retrans=3"

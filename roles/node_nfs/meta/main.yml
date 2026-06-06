@@ -1,0 +1,11 @@
+---
+argument_specs:
+  main:
+    short_description: Declarative Unraid NFS mounts
+    options:
+      node_nfs_server:
+        description: NFS server IP this role manages mounts from. Empty disables the role.
+      node_nfs_mounts:
+        description: Desired list of NFS mounts ({share, mountpoint, options}). Empty removes all.
+      node_nfs_default_options:
+        description: Default fstab mount options applied when a mount has no override.

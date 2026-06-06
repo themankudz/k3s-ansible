@@ -1,0 +1,209 @@
+---
+# Declaratively reconcile Unraid NFS mounts.
+#
+# The desired state is node_nfs_mounts. The role owns the mounts it created,
+# tracked in a managed-record file (/var/lib/node_nfs/managed.list). On the very
+# first run the record is seeded from the live NFS mounts for node_nfs_server
+# (one-time migration/adoption of pre-existing mounts), after which the record is
+# the sole source of ownership — the role never touches NFS mounts it did not
+# create.
+#
+# The whole role is a no-op unless node_nfs_server is set. To remove all mounts,
+# keep node_nfs_server set and set node_nfs_mounts to [].
+
+- name: Manage Unraid NFS mounts
+  when: node_nfs_server | length > 0
+  block:
+    - name: Check for managed record
+      ansible.builtin.stat:
+        path: /var/lib/node_nfs/managed.list
+      register: _nfs_record_stat
+
+    - name: Read managed record
+      ansible.builtin.slurp:
+        src: /var/lib/node_nfs/managed.list
+      register: _nfs_record
+      when: _nfs_record_stat.stat.exists
+
+    # Seed (first run only): mountpoints of fstab NFS lines for this server.
+    # fstab is the source of truth — one line per share, space escaped as \040.
+    - name: Seed owned mounts from existing fstab NFS lines (first run only)
+      ansible.builtin.command:
+        argv:
+          - awk
+          - -v
+          - "s={{ node_nfs_server }}:"
+          - '$3 ~ /^nfs/ && index($1, s) == 1 { m=$2; gsub(/\\040/, " ", m); print m }'
+          - /etc/fstab
+      register: _nfs_seed_raw
+      changed_when: false
+      check_mode: false
+      when: not _nfs_record_stat.stat.exists
+
+    - name: Compute desired NFS mount set
+      ansible.builtin.set_fact:
+        _nfs_desired: "{{ node_nfs_mounts | map(attribute='mountpoint') | list }}"
+
+    - name: Resolve owned mounts from managed record
+      ansible.builtin.set_fact:
+        _nfs_recorded: "{{ (_nfs_record.content | b64decode).split('\n') | map('trim') | select('ne', '') | list }}"
+      when: _nfs_record_stat.stat.exists
+
+    - name: Resolve owned mounts from fstab seed
+      ansible.builtin.set_fact:
+        _nfs_recorded: "{{ _nfs_seed_raw.stdout_lines | default([]) }}"
+      when: not _nfs_record_stat.stat.exists
+
+    - name: Compute mounts to remove
+      ansible.builtin.set_fact:
+        _nfs_remove: "{{ _nfs_recorded | difference(_nfs_desired) }}"
+
+    # --- Remove undesired mounts ---
+
+    - name: Resolve automount unit names for mounts to remove
+      ansible.builtin.command:
+        argv:
+          - systemd-escape
+          - --path
+          - --suffix=automount
+          - "{{ item }}"
+      register: _nfs_remove_units
+      changed_when: false
+      check_mode: false
+      loop: "{{ _nfs_remove }}"
+
+    - name: Stop undesired NFS automount units
+      ansible.builtin.systemd:
+        name: "{{ item.stdout }}"
+        state: stopped
+      loop: "{{ _nfs_remove_units.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+      failed_when: false
+
+    - name: Remove fstab entries for undesired NFS mounts
+      ansible.posix.mount:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ _nfs_remove }}"
+      notify: Reload systemd daemon
+
+    # --- Ensure desired mounts ---
+
+    - name: Create NFS mount points
+      ansible.builtin.file:
+        path: "{{ item.mountpoint }}"
+        state: directory
+        mode: "0755"
+      loop: "{{ node_nfs_mounts }}"
+      loop_control:
+        label: "{{ item.mountpoint }}"
+
+    - name: Ensure fstab entries for desired NFS mounts
+      ansible.posix.mount:
+        path: "{{ item.mountpoint }}"
+        src: "{{ node_nfs_server }}:{{ item.share }}"
+        fstype: nfs
+        opts: "{{ item.options | default(node_nfs_default_options) }}"
+        dump: "0"
+        passno: "0"
+        state: present
+      loop: "{{ node_nfs_mounts }}"
+      loop_control:
+        label: "{{ item.mountpoint }}"
+      notify: Reload systemd daemon
+
+    - name: Reload systemd before activating automounts
+      ansible.builtin.meta: flush_handlers
+
+    - name: Resolve automount unit names for desired mounts
+      ansible.builtin.command:
+        argv:
+          - systemd-escape
+          - --path
+          - --suffix=automount
+          - "{{ item.mountpoint }}"
+      register: _nfs_desired_units
+      changed_when: false
+      check_mode: false
+      loop: "{{ node_nfs_mounts }}"
+      loop_control:
+        label: "{{ item.mountpoint }}"
+
+    - name: Start desired NFS automount units
+      ansible.builtin.systemd:
+        name: "{{ item.stdout }}"
+        state: started
+      loop: "{{ _nfs_desired_units.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.mountpoint }}"
+
+    # --- Persist ownership record ---
+
+    - name: Ensure managed record directory
+      ansible.builtin.file:
+        path: /var/lib/node_nfs
+        state: directory
+        mode: "0755"
+
+    - name: Write managed record
+      ansible.builtin.copy:
+        dest: /var/lib/node_nfs/managed.list
+        content: "{{ (_nfs_desired | join('\n')) ~ ('\n' if _nfs_desired | length > 0 else '') }}"
+        mode: "0644"
+
+    # --- Stale-mount watchdog (only while NFS mounts exist) ---
+
+    - name: Deploy NFS stale-mount watchdog
+      when: node_nfs_mounts | length > 0
+      block:
+        - name: Deploy NFS stale-mount remount script
+          ansible.builtin.template:
+            src: nfs-remount.sh.j2
+            dest: /usr/local/bin/nfs-remount.sh
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Deploy nfs-remount systemd service unit
+          ansible.builtin.template:
+            src: nfs-remount.service.j2
+            dest: /etc/systemd/system/nfs-remount.service
+            owner: root
+            group: root
+            mode: "0644"
+
+        - name: Deploy nfs-remount systemd timer unit
+          ansible.builtin.template:
+            src: nfs-remount.timer.j2
+            dest: /etc/systemd/system/nfs-remount.timer
+            owner: root
+            group: root
+            mode: "0644"
+
+        - name: Enable and start nfs-remount timer
+          ansible.builtin.systemd:
+            name: nfs-remount.timer
+            enabled: true
+            state: started
+            daemon_reload: true
+
+    - name: Remove NFS stale-mount watchdog
+      when: node_nfs_mounts | length == 0
+      block:
+        - name: Stop and disable nfs-remount timer
+          ansible.builtin.systemd:
+            name: nfs-remount.timer
+            state: stopped
+            enabled: false
+          failed_when: false
+
+        - name: Remove nfs-remount units and script
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /etc/systemd/system/nfs-remount.timer
+            - /etc/systemd/system/nfs-remount.service
+            - /usr/local/bin/nfs-remount.sh
+          notify: Reload systemd daemon

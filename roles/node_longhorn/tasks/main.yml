@@ -1,0 +1,41 @@
+---
+# --- Longhorn dedicated disk ---
+
+- name: Check if Longhorn disk is already formatted
+  ansible.builtin.command: blkid -o value -s TYPE {{ node_longhorn_disk }}
+  register: _longhorn_disk_type
+  changed_when: false
+  failed_when: false
+  when: node_longhorn_disk != ""
+
+- name: Format Longhorn disk as ext4
+  community.general.filesystem:
+    fstype: ext4
+    dev: "{{ node_longhorn_disk }}"
+    opts: "-L longhorn"
+  when:
+    - node_longhorn_disk != ""
+    - _longhorn_disk_type.stdout == ""
+
+- name: Get UUID of Longhorn disk
+  ansible.builtin.command: blkid -o value -s UUID {{ node_longhorn_disk }}
+  register: _longhorn_uuid
+  changed_when: false
+  when: node_longhorn_disk != ""
+
+- name: Create Longhorn mount point
+  ansible.builtin.file:
+    path: "{{ node_longhorn_mount }}"
+    state: directory
+    mode: "0755"
+  when: node_longhorn_disk != ""
+
+- name: Mount Longhorn disk and add fstab entry
+  ansible.posix.mount:
+    path: "{{ node_longhorn_mount }}"
+    src: "UUID={{ _longhorn_uuid.stdout }}"
+    fstype: ext4
+    opts: defaults
+    passno: "2"
+    state: mounted
+  when: node_longhorn_disk != ""
