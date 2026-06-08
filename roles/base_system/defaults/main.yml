@@ -1,0 +1,6 @@
+---
+# Optional list of base packages to install on every VM (e.g. curl, vim, htop).
+base_packages: []
+
+# Generic VMs usually do not need IP forwarding (k3s nodes do). Off by default.
+base_ip_forward: false

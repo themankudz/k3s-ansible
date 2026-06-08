@@ -1,0 +1,17 @@
+---
+argument_specs:
+  main:
+    short_description: OpenTelemetry Collector forwarding host metrics + logs to SigNoz
+    options:
+      otelcol_version:
+        description: otelcol-contrib release version to install (no "v" prefix).
+      signoz_otlp_endpoint:
+        description: SigNoz OTLP gRPC endpoint (host:port, TLS).
+      signoz_cluster_name:
+        description: Value for the signoz.cluster.name resource attribute.
+      deployment_environment:
+        description: Value for the deployment.environment resource attribute.
+      signoz_ingestion_key:
+        description: Optional ingestion key sent as signoz-access-token header. Empty disables the header.
+      otelcol_collection_interval:
+        description: hostmetrics scrape interval (e.g. 30s).

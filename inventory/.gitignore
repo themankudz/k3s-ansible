@@ -1,3 +1,5 @@
 /*
 !.gitignore
 !sample/
+# infra inventory is safe to commit: secrets live in an ansible-vault file
+!infra/

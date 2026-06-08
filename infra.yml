@@ -1,0 +1,15 @@
+---
+# Generic infrastructure baseline for standalone Debian/Ubuntu VMs (not k3s nodes).
+# Prepares base OS config, unattended-upgrades, postfix→SES mail relay, and an
+# OpenTelemetry collector forwarding host metrics + logs to SigNoz.
+- name: Prepare infrastructure VMs
+  hosts: infra
+  gather_facts: true
+  become: true
+  roles:
+    - role: base_system
+    - role: unattended_upgrades
+    - role: mail_relay
+      when: mail_relay_enabled | default(true)
+    - role: node_monitoring
+      when: node_monitoring_enabled | default(true)

@@ -1,0 +1,53 @@
+---
+# Install otelcol-contrib from the GitHub release .deb and point it at SigNoz.
+
+- name: Map host architecture to release arch
+  ansible.builtin.set_fact:
+    _otelcol_arch: "{{ _otelcol_arch_map[ansible_architecture] | default(ansible_architecture) }}"
+  vars:
+    _otelcol_arch_map:
+      aarch64: arm64
+      x86_64: amd64
+
+- name: Check installed otelcol-contrib version
+  ansible.builtin.command: dpkg-query -W -f='${Version}' otelcol-contrib
+  register: _otelcol_installed
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Install otelcol-contrib .deb
+  ansible.builtin.apt:
+    deb: "{{ _otelcol_deb_url }}"
+  vars:
+    _otelcol_base: "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download"
+    _otelcol_file: "otelcol-contrib_{{ otelcol_version }}_linux_{{ _otelcol_arch }}.deb"
+    _otelcol_deb_url: "{{ _otelcol_base }}/v{{ otelcol_version }}/{{ _otelcol_file }}"
+  when: _otelcol_installed.stdout != otelcol_version
+
+# Run the agent as its own user but grant journal + log read access so the
+# journald and filelog receivers work without running as root.
+- name: Grant otelcol-contrib access to journal and logs
+  ansible.builtin.user:
+    name: otelcol-contrib
+    groups:
+      - systemd-journal
+      - adm
+    append: true
+  notify: Restart otelcol-contrib
+
+- name: Template otelcol-contrib config
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: /etc/otelcol-contrib/config.yaml
+    owner: root
+    group: otelcol-contrib
+    mode: "0640"
+  notify: Restart otelcol-contrib
+
+- name: Enable and start otelcol-contrib
+  ansible.builtin.systemd:
+    name: otelcol-contrib
+    enabled: true
+    state: started
+    daemon_reload: true

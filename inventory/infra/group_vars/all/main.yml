@@ -1,0 +1,43 @@
+---
+# Non-secret config for the generic infra playbook. Secrets live in vault.yml
+# (ansible-vault encrypted) and are referenced here via vault_* variables.
+
+# SSH user with access to these VMs.
+ansible_user: k3s
+
+# --- base_system ---
+system_timezone: Europe/London
+apt_proxy_http_url: http://192.168.50.220:3142
+base_packages:
+  - curl
+  - vim
+  - htop
+  - ca-certificates
+base_ip_forward: false
+
+# --- unattended_upgrades ---
+uu_automatic_reboot: false
+uu_automatic_reboot_time: "02:00"
+unattended_upgrades_mail: themankudz@gmail.com
+unattended_upgrades_mail_trigger: on-change
+
+# --- mail_relay (Amazon SES) ---
+mail_relay_enabled: true
+mail_hostname: homecluster.co
+smtp_sasl_auth_enable: "yes"
+smtp_relayhost: email-smtp.eu-west-1.amazonaws.com:587
+smtp_servers:
+  - host: email-smtp.eu-west-1.amazonaws.com:587
+    key: "{{ vault_smtp_key }}"
+  - host: email-smtp.eu-west-2.amazonaws.com:587
+    key: "{{ vault_smtp_key }}"
+# Opt-in test email (set true for a one-off verification run).
+mail_relay_send_test: false
+mail_relay_test_recipient: themankudz@gmail.com
+
+# --- node_monitoring (SigNoz) ---
+node_monitoring_enabled: true
+signoz_otlp_endpoint: signoz-ingress.homecluster.co:443
+signoz_cluster_name: homelab
+deployment_environment: homelab
+signoz_ingestion_key: "{{ vault_signoz_ingestion_key }}"

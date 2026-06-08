@@ -1,0 +1,17 @@
+---
+argument_specs:
+  main:
+    short_description: Install and configure unattended-upgrades
+    options:
+      uu_automatic_reboot:
+        description: Reboot automatically after upgrades that require it.
+      uu_automatic_reboot_time:
+        description: Time of day (HH:MM) for the automatic reboot when enabled.
+      uu_remove_unused_kernel_packages:
+        description: Remove unused kernel packages after upgrades.
+      uu_remove_unused_dependencies:
+        description: Remove unused/new-unused dependencies after upgrades.
+      unattended_upgrades_mail:
+        description: Email recipient for upgrade reports. Empty disables Mail/MailReport directives.
+      unattended_upgrades_mail_trigger:
+        description: MailReport trigger - "always", "only-on-error" or "on-change".

@@ -1,0 +1,17 @@
+---
+argument_specs:
+  main:
+    short_description: Postfix send-only relay to an SMTP smarthost
+    options:
+      mail_hostname:
+        description: Domain emails are sent from; used to build the postfix mailname.
+      smtp_sasl_auth_enable:
+        description: Enable SASL authentication to the relay ("yes"/"no").
+      smtp_relayhost:
+        description: Smarthost relay host:port (e.g. an Amazon SES endpoint).
+      smtp_servers:
+        description: List of {host, key} entries written to sasl_passwd. key is "user:password".
+      mail_relay_send_test:
+        description: Send a one-off test email when true.
+      mail_relay_test_recipient:
+        description: Recipient for the opt-in test email.

@@ -59,6 +59,25 @@ After `site.yml` completes, `./kubeconfig` is written to the repo root (gitignor
 
 **Note**: `ansible.cfg` points to `inventory/homeserver-cluster/hosts.ini` which doesn't exist. Always pass `-i inventory/homelab-cluster/hosts.ini` explicitly.
 
+### Generic Infra Playbook (standalone VMs)
+
+`infra.yml` prepares any Debian/Ubuntu VM (not necessarily a k3s node) with base OS config, unattended-upgrades, a postfix→SES mail relay, and an OpenTelemetry collector forwarding **host metrics + host logs** to the self-hosted SigNoz (`signoz-ingress.homecluster.co:443`, gRPC OTLP, TLS). It is fully separate from the live k3s path (`site.yml`/`prereq`/`mail-setup` are untouched).
+
+```bash
+# Run the full infra baseline (vault password required for secrets)
+ansible-playbook infra.yml -i inventory/infra/hosts.ini --ask-vault-pass
+# or, with a password file:
+ANSIBLE_VAULT_PASSWORD_FILE=.vault_pass ansible-playbook infra.yml -i inventory/infra/hosts.ini
+
+# Syntax check / dry run
+ansible-playbook infra.yml -i inventory/infra/hosts.ini --syntax-check --ask-vault-pass
+ansible-playbook infra.yml -i inventory/infra/hosts.ini --check --ask-vault-pass
+```
+
+Per-VM toggles: `mail_relay_enabled` and `node_monitoring_enabled` (both default `true`); `mail_relay_send_test: true` sends a one-off test email.
+
+**Secrets (ansible-vault)**: `inventory/infra/group_vars/all/vault.yml` is vault-encrypted (holds `vault_smtp_key`, `vault_signoz_ingestion_key`) so inventories can be committed to git. The vault password lives in `.vault_pass` (gitignored). Edit secrets with `ansible-vault edit --vault-password-file .vault_pass inventory/infra/group_vars/all/vault.yml`. Non-secret config is in `inventory/infra/group_vars/all/main.yml`, which references the `vault_*` vars.
+
 ### Linting
 
 ```bash
@@ -130,6 +149,15 @@ Pre-upgrade: snapshot etcd from a master node — `sudo k3s etcd-snapshot save -
 | **node_nfs** | Declaratively manage Unraid NFS mounts (`node_nfs_server` + `node_nfs_mounts`) and the `nfs-remount` stale-mount watchdog. The role owns exactly the mounts in `node_nfs_mounts` (tracked via `/var/lib/node_nfs/managed.list`); set the list to `[]` (keeping `node_nfs_server`) to remove all. Empty `node_nfs_server` = no-op. |
 | **longhorn_node_fix** | OS-level fixes for stable Longhorn operation (see below) |
 | **reset** | Complete cluster teardown |
+
+### Generic infra roles (used by `infra.yml`, not `site.yml`)
+
+| Role | Purpose |
+|------|---------|
+| **base_system** | Generic Debian/Ubuntu OS baseline: timezone, apt-proxy, optional `base_packages`, optional `base_ip_forward` sysctl (off by default). The non-k3s extraction of `prereq`. |
+| **unattended_upgrades** | Installs and fully owns unattended-upgrades: `20auto-upgrades`, `50unattended-upgrades` (allowed origins, remove-unused, optional auto-reboot, and the `Mail`/`MailReport` directives gated on `unattended_upgrades_mail`), plus the `InhibitDelayMaxSec=90` logind tweak. |
+| **mail_relay** | Postfix send-only relay to an SMTP smarthost (Amazon SES). Refactor of `mail-setup`: postmap runs via handler, test email is opt-in (`mail_relay_send_test`), and it no longer touches `50unattended-upgrades`. |
+| **node_monitoring** | Installs `otelcol-contrib` (arch-mapped GitHub `.deb`, pinned by `otelcol_version`) and configures it to forward host metrics (`hostmetrics`) + host logs (`journald`) to SigNoz (`signoz_otlp_endpoint`, TLS). Runs as the `otelcol-contrib` user in the `systemd-journal`/`adm` groups. |
 
 ### longhorn_node_fix role
 

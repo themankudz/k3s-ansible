@@ -1,0 +1,72 @@
+---
+# Postfix configured as a send-only relay to an SMTP smarthost (e.g. Amazon SES).
+# Refactor of the old mail-setup role: postmap runs via handler, the test email is
+# opt-in, and the unattended-upgrades Mail directives now live in the
+# unattended_upgrades role.
+
+- name: Set postfix debconf - mailname
+  ansible.builtin.debconf:
+    name: postfix
+    question: postfix/mailname
+    vtype: string
+    value: "{{ ansible_hostname }}.{{ mail_hostname }}"
+  tags: install
+
+- name: Set postfix debconf - mailer type
+  ansible.builtin.debconf:
+    name: postfix
+    question: postfix/main_mailer_type
+    vtype: select
+    value: Internet Site
+  tags: install
+
+- name: Install mail packages
+  ansible.builtin.apt:
+    name:
+      - postfix
+      - mutt
+      - mailutils
+    state: present
+    update_cache: true
+  tags: install
+
+- name: Configure postfix main.cf
+  ansible.builtin.lineinfile:
+    line: "{{ item.line }}"
+    regexp: "{{ item.regexp }}"
+    state: present
+    insertafter: EOF
+    path: /etc/postfix/main.cf
+  loop:
+    - line: smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd
+      regexp: "^smtp_sasl_password_maps.*"
+    - line: smtp_sasl_security_options = noanonymous
+      regexp: "^smtp_sasl_security_options.*"
+    - line: "smtp_sasl_auth_enable = {{ smtp_sasl_auth_enable }}"
+      regexp: "^smtp_sasl_auth_enable.*"
+    - line: myorigin = /etc/mailname
+      regexp: "^myorigin.*"
+    - line: "relayhost = {{ smtp_relayhost }}"
+      regexp: "^relayhost.*"
+  loop_control:
+    label: "{{ item.line }}"
+  notify: Restart postfix
+
+- name: Copy sasl password file to host
+  ansible.builtin.template:
+    src: sasl_passwd.j2
+    dest: /etc/postfix/sasl_passwd
+    owner: root
+    group: root
+    mode: "0600"
+  tags: sasl_passwd
+  notify:
+    - Run postmap on sasl_passwd
+    - Restart postfix
+
+- name: Send test email
+  ansible.builtin.command: 'echo test | mutt -s "{{ ansible_hostname }} test" {{ mail_relay_test_recipient }}'
+  changed_when: false
+  when:
+    - mail_relay_send_test | bool
+    - mail_relay_test_recipient | length > 0

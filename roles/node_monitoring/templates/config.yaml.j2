@@ -1,0 +1,56 @@
+# Managed by Ansible (roles/node_monitoring) — do not edit by hand.
+receivers:
+  hostmetrics:
+    collection_interval: {{ otelcol_collection_interval }}
+    scrapers:
+      cpu: {}
+      load: {}
+      memory: {}
+      disk: {}
+      filesystem: {}
+      network: {}
+      paging: {}
+      processes: {}
+  journald:
+    directory: /var/log/journal
+
+processors:
+  resourcedetection/system:
+    detectors: [env, system]
+    system:
+      hostname_sources: [os]
+      resource_attributes:
+        host.name:
+          enabled: true
+        os.type:
+          enabled: true
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: {{ deployment_environment }}
+        action: upsert
+      - key: signoz.cluster.name
+        value: {{ signoz_cluster_name }}
+        action: upsert
+  batch: {}
+
+exporters:
+  otlp:
+    endpoint: {{ signoz_otlp_endpoint }}
+    tls:
+      insecure: false
+{% if signoz_ingestion_key | length > 0 %}
+    headers:
+      signoz-access-token: {{ signoz_ingestion_key }}
+{% endif %}
+
+service:
+  pipelines:
+    metrics:
+      receivers: [hostmetrics]
+      processors: [resourcedetection/system, resource, batch]
+      exporters: [otlp]
+    logs:
+      receivers: [journald]
+      processors: [resourcedetection/system, resource, batch]
+      exporters: [otlp]

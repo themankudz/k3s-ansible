@@ -1,0 +1,17 @@
+---
+# Domain emails are sent from; must be configured in your relay.
+mail_hostname: example.com
+
+# Enable SASL authentication to the relay.
+smtp_sasl_auth_enable: "yes"
+
+# Smarthost relay (e.g. Amazon SES endpoint with port).
+smtp_relayhost: email-smtp.eu-west-1.amazonaws.com:587
+
+# SMTP credentials. Each entry: {host, key} where key is "user:password".
+# Pull the secret half from a vaulted variable.
+smtp_servers: []
+
+# The test email is opt-in (set true for a one-off verification run).
+mail_relay_send_test: false
+mail_relay_test_recipient: ""

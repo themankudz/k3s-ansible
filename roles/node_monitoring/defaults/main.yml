@@ -1,0 +1,20 @@
+---
+# OpenTelemetry Collector (contrib distro) forwarding host metrics + host logs
+# to the self-hosted SigNoz OTLP ingress.
+
+# otelcol-contrib release to install (no "v" prefix; the GitHub tag adds it).
+otelcol_version: "0.153.0"
+
+# SigNoz OTLP gRPC endpoint (TLS). Mirrors the in-cluster k8s-infra config.
+signoz_otlp_endpoint: "signoz-ingress.homecluster.co:443"
+
+# Logical labels attached to every signal.
+signoz_cluster_name: "homelab"
+deployment_environment: "homelab"
+
+# Optional ingestion key. When empty, no signoz-access-token header is sent
+# (the in-cluster management collector uses none).
+signoz_ingestion_key: ""
+
+# hostmetrics scrape interval.
+otelcol_collection_interval: "30s"

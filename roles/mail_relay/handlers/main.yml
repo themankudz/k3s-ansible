@@ -1,0 +1,11 @@
+---
+- name: Run postmap on sasl_passwd
+  ansible.builtin.command: postmap /etc/postfix/sasl_passwd
+  args:
+    creates: /etc/postfix/sasl_passwd.db
+
+- name: Restart postfix
+  ansible.builtin.systemd_service:
+    name: postfix
+    state: restarted
+    daemon_reload: true

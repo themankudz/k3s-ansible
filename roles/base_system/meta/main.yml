@@ -1,0 +1,13 @@
+---
+argument_specs:
+  main:
+    short_description: Generic OS baseline for Debian/Ubuntu VMs
+    options:
+      system_timezone:
+        description: Timezone to set on the host (skipped if unset or the sample placeholder).
+      apt_proxy_http_url:
+        description: HTTP apt-cacher proxy URL. When set, written to /etc/apt/apt.conf.d/00aptproxy.
+      base_packages:
+        description: List of base packages to install. Empty skips the install task.
+      base_ip_forward:
+        description: Enable net.ipv4.ip_forward sysctl. Off by default for generic VMs.

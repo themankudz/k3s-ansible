@@ -1,0 +1,38 @@
+---
+# Generic OS baseline for any Debian/Ubuntu VM.
+# Extracted from roles/prereq (the k3s path) but stripped of k3s specifics.
+
+- name: Set the system timezone
+  community.general.timezone:
+    name: "{{ system_timezone }}"
+  when:
+    - system_timezone is defined
+    - system_timezone != "Your/Timezone"
+
+- name: Add apt-cacher proxy settings
+  ansible.builtin.template:
+    src: apt-proxy
+    dest: /etc/apt/apt.conf.d/00aptproxy
+    owner: root
+    group: root
+    mode: "0644"
+  tags: apt-cacher
+  when:
+    - ansible_os_family == "Debian"
+    - apt_proxy_http_url is defined
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ base_packages }}"
+    state: present
+    update_cache: true
+  when: base_packages | length > 0
+
+- name: Enable IPv4 forwarding
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    state: present
+    reload: true
+  tags: sysctl
+  when: base_ip_forward | bool

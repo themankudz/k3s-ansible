@@ -18,3 +18,5 @@ rules:
 
 ignore:
   - galaxy.yml
+  # ansible-vault encrypted files are not valid YAML to the linter
+  - inventory/**/vault.yml

@@ -1,0 +1,14 @@
+---
+# Automatic reboot after upgrades that require one. Off by default.
+uu_automatic_reboot: false
+uu_automatic_reboot_time: "02:00"
+
+# Remove unused dependencies / kernels after upgrades.
+uu_remove_unused_kernel_packages: true
+uu_remove_unused_dependencies: true
+
+# Email notifications. Mail/MailReport directives are only written when
+# unattended_upgrades_mail is set (non-empty). Trigger values: "always",
+# "only-on-error" or "on-change".
+unattended_upgrades_mail: ""
+unattended_upgrades_mail_trigger: on-change
