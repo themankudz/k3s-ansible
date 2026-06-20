@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Hermes Agent gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ hermes_user }}
+Group={{ hermes_group }}
+WorkingDirectory={{ hermes_home }}
+EnvironmentFile={{ hermes_home }}/.hermes/.env
+Environment=HOME={{ hermes_home }}
+Environment=PATH={{ hermes_home }}/.local/bin:{{ hermes_home }}/.hermes/node/bin:/usr/bin:/bin
+ExecStart={{ hermes_home }}/.local/bin/hermes gateway run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

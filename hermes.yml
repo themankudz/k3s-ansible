@@ -1,0 +1,11 @@
+---
+# Provision standalone Hermes Agent hosts.
+# Uses its OWN inventory tree — the homelab-cluster inventory is left untouched
+# so k3s plays can never target these hosts. Always run with an explicit -i:
+#   ansible-playbook -i inventory/hermes-agents/hosts.ini hermes.yml
+- name: Provision Hermes Agent hosts
+  hosts: hermes_agents
+  gather_facts: true
+  become: true
+  roles:
+    - role: hermes_agent

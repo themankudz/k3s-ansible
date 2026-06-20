@@ -1,0 +1,67 @@
+---
+argument_specs:
+  main:
+    short_description: Provision a host as a standalone Hermes Agent (bare-metal + systemd)
+    options:
+      hermes_user:
+        default: hermes
+        description: Unprivileged user the agent and its Local exec backend run as.
+      hermes_home:
+        default: /home/hermes
+        description: Home directory for the hermes user; Hermes data lives under ~/.hermes.
+      hermes_install_url:
+        description: URL of the Hermes install.sh bootstrap script.
+      hermes_install_flags:
+        description: Flags passed to install.sh (non-interactive, skip-setup, no-playwright).
+      hermes_commit:
+        description: Optional commit SHA to pin the installed/updated Hermes checkout.
+      hermes_update:
+        default: false
+        description: When true, re-run the installer to git pull --ff-only on an existing checkout.
+      hermes_provider:
+        default: ollama
+        description: LLM provider alias written to config.yaml (ollama maps to a custom OpenAI endpoint).
+      hermes_model:
+        default: qwen3:8b
+        description: Default model name.
+      hermes_ollama_base_url:
+        description: Base URL of the Ollama host (no /v1 suffix); /v1 is appended for config.yaml.
+      hermes_ollama_context_length:
+        default: 64000
+        description: Client-side OLLAMA_CONTEXT_LENGTH; must also be set server-side on the Ollama host.
+      hermes_gateway_enabled:
+        default: false
+        description: Enable+start the gateway systemd unit. Leave false until a platform adapter exists.
+      hermes_dashboard_enabled:
+        default: false
+        description: Enable+start the web dashboard systemd unit (config / API keys / sessions).
+      hermes_dashboard_host:
+        default: 127.0.0.1
+        description: Bind address for the dashboard. A non-loopback IP exposes it on the LAN and forces --insecure.
+      hermes_dashboard_port:
+        default: 9119
+        description: TCP port the dashboard listens on.
+      hermes_dashboard_skip_build:
+        default: true
+        description: Serve the pre-built web dist (--skip-build) instead of rebuilding on every start.
+      hermes_telegram_bot_token:
+        description: Telegram bot token (vault this); written to .env only when set.
+      hermes_honcho_enabled:
+        default: false
+        description: Enable the Honcho memory provider (templates honcho.json + sets memory.provider in config.yaml). Swaps Hermes off its built-in SQLite store.
+      hermes_honcho_base_url:
+        default: https://honcho-api.homecluster.co
+        description: Base URL of the self-hosted Honcho API (the openconcho UI owns honcho.homecluster.co). Non-secret; written to honcho.json.
+      hermes_honcho_workspace:
+        default: hermes
+        description: Honcho workspace ID. Must match the scope of the minted JWT (generate_jwt.py --workspace).
+      hermes_honcho_peer_name:
+        description: Your user peer identity in Honcho (no env/default fallback, so set it). Written to honcho.json.
+      hermes_honcho_ai_peer:
+        default: hermes
+        description: The agent's peer identity in Honcho. Written to honcho.json.
+      hermes_honcho_pin_user_peer:
+        default: true
+        description: Collapse all gateway runtime users onto peer_name (single-operator deployments).
+      hermes_honcho_api_key:
+        description: Workspace-scoped Honcho JWT (vault this); written to .env as HONCHO_API_KEY only when set.

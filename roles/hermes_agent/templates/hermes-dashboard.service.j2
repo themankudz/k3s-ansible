@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Hermes Agent web dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ hermes_user }}
+Group={{ hermes_group }}
+WorkingDirectory={{ hermes_home }}
+EnvironmentFile={{ hermes_home }}/.hermes/.env
+Environment=HOME={{ hermes_home }}
+Environment=PATH={{ hermes_home }}/.local/bin:{{ hermes_home }}/.hermes/node/bin:/usr/bin:/bin
+ExecStart={{ hermes_home }}/.local/bin/hermes dashboard --no-open --host {{ hermes_dashboard_host }} --port {{ hermes_dashboard_port }}{% if hermes_dashboard_skip_build | bool %} --skip-build{% endif %}{% if hermes_dashboard_host not in ['127.0.0.1', 'localhost', '::1'] %} --insecure{% endif %}
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

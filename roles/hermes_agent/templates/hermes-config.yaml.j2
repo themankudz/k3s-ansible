@@ -1,0 +1,111 @@
+# {{ ansible_managed }}
+# Hermes Agent configuration — owned by the hermes_agent Ansible role.
+# Non-secret settings only (model, provider, endpoint). Secrets live in .env.
+model:
+  default: "{{ hermes_model }}"
+  provider: "{{ hermes_provider }}"
+  # provider aliases (ollama/vllm/llamacpp) resolve to a custom OpenAI-compatible
+  # endpoint, so point base_url at Ollama's /v1 surface.
+  base_url: "{{ hermes_ollama_base_url }}/v1"
+  # ⚠️ ollama_num_ctx does NOT reach Ollama: the OpenAI-compat /v1 endpoint
+  # IGNORES options.num_ctx (verified 2026-06-12 — see smart-assistant
+  # debugging/perplexity-mcp-tool-calling.md). The real served window is set
+  # server-side via OLLAMA_CONTEXT_LENGTH=131072 on the ollama deployment
+  # (homelab-k3s/open-webui/ollama-server.yaml). qwen3.5:9b is 262k-native and
+  # rope-scales, so 131072 is honoured rather than clamped.
+  ollama_num_ctx: {{ hermes_ollama_context_length }}
+  # This one MATTERS twice: it bypasses Hermes' startup gate (which reads the
+  # GGUF's smaller metadata window and refuses tool use below 64k) AND tells
+  # Hermes its usable window for context management — so it must equal the
+  # server-side OLLAMA_CONTEXT_LENGTH, else Hermes compresses early.
+  context_length: {{ hermes_ollama_context_length }}
+{% if hermes_web_backend | length > 0 %}
+
+# Built-in web_search/web_extract tools. Without a backend the web toolset
+# silently emits NO tools and small local models claim "no web access" — a
+# clearly-named web_search is what makes qwen3:8b search unprompted. "ddgs"
+# (DuckDuckGo scrape) is keyless but needs the `ddgs` pip package in the
+# Hermes venv (installed by a role task).
+web:
+  backend: "{{ hermes_web_backend }}"
+{% endif %}
+{% if hermes_honcho_enabled %}
+
+# Honcho persistent memory — swaps out the built-in SQLite store. config.yaml
+# only SELECTS the provider; connection + identity live in ~/.hermes/honcho.json
+# (templated by the role) and the JWT in .env as HONCHO_API_KEY. The installed
+# plugin reads no `url` from this block (verified vs plugins/memory/honcho).
+memory:
+  provider: honcho
+{% endif %}
+{% if hermes_delegation_heavy_enabled %}
+
+# Heavy reasoning tier. The built-in delegate_task tool spawns subagents on this
+# model (the 35B on local Ollama) WITH their own tools — the fast 9b escalates
+# hard/multi-step problems here. Subagents do NOT inherit SOUL.md (Hermes uses
+# skip_context_files for delegation → DEFAULT_AGENT_IDENTITY), so the parent must
+# pass any heavy constraints in the delegate_task context (see SOUL.md). num_ctx
+# + keep_alive are NOT delegation keys — they're governed server-side on Ollama.
+delegation:
+  model: "{{ hermes_heavy_model }}"
+  base_url: "{{ hermes_heavy_base_url }}"
+  api_key: "{{ hermes_heavy_api_key }}"
+{% if hermes_delegation_max_iterations is defined %}
+  max_iterations: {{ hermes_delegation_max_iterations }}
+{% endif %}
+{% if hermes_delegation_max_concurrent_children is defined %}
+  max_concurrent_children: {{ hermes_delegation_max_concurrent_children }}
+{% endif %}
+{% endif %}
+{% if hermes_perplexity_enabled or hermes_n8n_enabled or hermes_hass_mcp_enabled or hermes_github_mcp_enabled %}
+
+# MCP servers. stdio servers run under Hermes' bundled Node (~/.hermes/node/bin
+# is on the gateway unit's PATH), so npx needs no system Node. Secrets are
+# resolved at runtime from .env via ${VAR}; they are NOT stored in this file.
+# The env mapping forwards only the listed vars to the child process. Remote
+# servers use `url` (+ headers); Hermes defaults a remote url to StreamableHTTP.
+mcp_servers:
+{% if hermes_perplexity_enabled %}
+  perplexity:
+    command: "npx"
+    args: ["-y", "server-perplexity-ask"]
+    env:
+      PERPLEXITY_API_KEY: "${PERPLEXITY_API_KEY}"
+{% endif %}
+{% if hermes_n8n_enabled %}
+  # git+venv stdio bridge (cloned to {{ hermes_n8n_dir }} by the role). Tool
+  # surface pinned to the manifest's read-mostly default (no activate/deactivate).
+  n8n:
+    command: "{{ hermes_n8n_dir }}/.venv/bin/python"
+    args: ["{{ hermes_n8n_dir }}/server.py"]
+    env:
+      N8N_BASE_URL: "${N8N_BASE_URL}"
+      N8N_API_KEY: "${N8N_API_KEY}"
+    tools:
+      include: [health, list_workflows, get_workflow, find_workflows, list_executions, get_execution, recent_failures, export_workflow]
+{% endif %}
+{% if hermes_hass_mcp_enabled %}
+  # Remote streamable-HTTP. /api/mcp returns 401 → Authorization required.
+  homeassistant:
+    url: "{{ hermes_hass_mcp_url }}"
+{% if hermes_hass_mcp_token | length > 0 %}
+    headers:
+      Authorization: "Bearer ${HASS_MCP_TOKEN}"
+{% endif %}
+{% endif %}
+{% if hermes_github_mcp_enabled %}
+  # GitHub's official HOSTED MCP (remote streamable-HTTP). Bearer PAT auth +
+  # optional GitHub control headers: X-MCP-Readonly gates out mutating tools,
+  # X-MCP-Toolsets pins the exposed tool surface. Token resolved from .env.
+  github:
+    url: "{{ hermes_github_mcp_url }}"
+    headers:
+      Authorization: "Bearer ${GITHUB_MCP_TOKEN}"
+{% if hermes_github_mcp_readonly | bool %}
+      X-MCP-Readonly: "true"
+{% endif %}
+{% if hermes_github_mcp_toolsets | length > 0 %}
+      X-MCP-Toolsets: "{{ hermes_github_mcp_toolsets }}"
+{% endif %}
+{% endif %}
+{% endif %}

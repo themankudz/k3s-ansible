@@ -1,0 +1,198 @@
+---
+# Identity the agent runs as. Unprivileged on purpose: Hermes' Local exec
+# backend runs tools as this user, so no sudo keeps the blast radius small.
+hermes_user: hermes
+hermes_group: hermes
+hermes_home: /home/hermes
+
+# Installer behaviour. --skip-setup avoids the interactive wizard (we manage
+# config.yaml/.env declaratively); --no-playwright skips browser automation
+# (out of scope on the Pi 4). Pin hermes_commit for reproducible rebuilds.
+hermes_install_url: https://hermes-agent.nousresearch.com/install.sh
+hermes_install_flags: "--non-interactive --skip-setup --no-playwright"
+hermes_commit: ""                 # optional commit SHA to pin install/update
+hermes_update: false              # set true to `git pull --ff-only` on re-run
+
+# Model / provider. provider "ollama" is a Hermes alias that maps to a custom
+# OpenAI-compatible endpoint, so base_url targets Ollama's /v1 surface.
+hermes_provider: ollama
+hermes_model: "gemma4:e4b"        # Fast/resident tier. Switched from qwen3.5:9b 2026-06-20: qwen3.5/3.6 are
+                                  # hybrid-SSM → single-slot serialization (Hermes blocked behind Honcho
+                                  # deriver/dialectic + Hermes title-gen on one lane = slow). gemma4:e4b is SWA
+                                  # → honors OLLAMA_NUM_PARALLEL (real concurrent slots) + ~3.4GB VRAM + prompt-
+                                  # cache reuse. Trade-off: e4b is a weaker debugger (per v1.3.0 benchmarks) +
+                                  # ~131k ctx wall, so hard reasoning is escalated to the qwen3.6:35b-a3b heavy
+                                  # tier via delegate_task (D7). See memory ollama-ssm-vs-swa-concurrency.
+hermes_ollama_base_url: "http://192.168.50.235:11434"
+# Hermes refuses models with <64k context for reliable tool use, so this value
+# bypasses that gate (via context_length). It also tells Hermes how large the
+# window is for its OWN context management/compression — so it MUST match the
+# real served window, or Hermes compresses at this value even though Ollama
+# serves more. It does NOT itself set the served window: Ollama's /v1 endpoint
+# ignores options.num_ctx. qwen3.5:9b is 262,144-native and rope-scales, so the
+# real window is the PER-SLOT OLLAMA_CONTEXT_LENGTH on the ollama deployment
+# (homelab-k3s/open-webui/ollama-server.yaml) — KEEP THESE TWO IN SYNC (this MUST
+# equal that per-slot value). That deployment now runs OLLAMA_NUM_PARALLEL=2 so
+# total KV = 2 × 65536 = 131072 (128k, the same that fit GPU-resident as one slot)
+# — 2 concurrent slots stop Hermes queuing behind the Honcho deriver/dialectic +
+# Open WebUI auxiliary tasks (measured 25–34s queue waits, 2026-06-20). 65536 (64k)
+# clears Hermes' hard 64k tool-use floor; don't drop below it. 3 slots would force
+# <64k/slot (breaks the floor) or spill KV to CPU. Debug trail: smart-assistant
+# debugging/perplexity-mcp-tool-calling.md (2026-06-12) + the 2026-06-20 contention dig.
+hermes_ollama_context_length: 65536
+
+# Backend for Hermes' built-in web_search/web_extract tools. Empty disables the
+# block. "ddgs" = keyless DuckDuckGo scraping; the role installs the `ddgs`
+# pip package into the Hermes venv when selected. Without a web backend the
+# toolset emits no tools and the local model believes it has no web access.
+hermes_web_backend: ddgs
+
+# Re-apply the local fix for the upstream `hermes -z` one-shot bug where the
+# agent snapshots its tool list before background MCP discovery finishes
+# (~4-8s on a Pi 4) — without it, MCP tools (Perplexity) never appear in CLI
+# runs. Idempotent; fails loudly if upstream refactors the anchor so we notice
+# on update. Gateway/cron/TUI paths are unaffected by the bug. Drop this once
+# fixed upstream.
+hermes_oneshot_mcp_wait_patch: true
+
+# Gateway (Telegram/Codex surface). Unit is templated either way; left
+# disabled+stopped until a platform adapter exists so it can't crash-loop.
+hermes_gateway_enabled: false
+
+# Web dashboard (config / API keys / session browser). Unit templated either
+# way; enable to run it as a service. host 127.0.0.1 keeps it loopback-only;
+# set a LAN IP to expose it (forces --insecure — see SECURITY note below).
+hermes_dashboard_enabled: false
+hermes_dashboard_host: "127.0.0.1"
+hermes_dashboard_port: 9119
+# Serve the pre-built web dist instead of rebuilding on every start (the build
+# is slow/RAM-hungry on a Pi 4). Requires the dist to exist already — set false
+# for the very first provision on a host that has never built the dashboard.
+hermes_dashboard_skip_build: true
+
+# MCP servers. Perplexity gives the local model live web search + citations.
+# stdio server launched via Hermes' bundled Node (~/.hermes/node/bin), so no
+# system Node needed. The key lives in the vaulted .env and is referenced from
+# the 0644 config.yaml as ${PERPLEXITY_API_KEY} (never written in cleartext
+# there). PRIVACY: query text leaves the homelab to Perplexity — keep personal
+# context out of these calls; this is a stateless cloud-search tool.
+hermes_perplexity_enabled: false
+
+# Native Anthropic provider SDK. install.sh --skip-setup pulls no optional
+# extras, so the `anthropic` package (needed only when the model/delegation
+# block routes to Claude natively, not via OpenRouter) is absent. It's a
+# harmless unused lib until provider: anthropic is configured — installed now so
+# that path is ready when the cost-scenario decision lands. Pin = Hermes'
+# [anthropic] extra.
+hermes_anthropic_extra: true
+
+# Browser automation (plugins/browser → Playwright + Chromium). Import-gated:
+# browser tools appear only when playwright imports AND a Chromium binary is
+# present. Idle cost ~0 (nothing runs until a browser tool is invoked); the
+# weight is disk (Chromium download) + a RAM/CPU spike WHEN used (rough on a
+# Pi 4). Off by default; flip true to pip-install playwright + run
+# `playwright install chromium` into the hermes venv.
+hermes_browser_enabled: false
+
+# n8n MCP bridge (optional-mcps/n8n → CyberSamuraiX/hermes-n8n-mcp; git+venv
+# stdio server). Lets the agent inspect/manage n8n workflows. Read-mostly tool
+# surface (mutating activate/deactivate pruned). Disabled until the API key is
+# set in the vault; base_url points at the running instance.
+hermes_n8n_enabled: false
+hermes_n8n_base_url: "https://n8n.homecluster.co"
+hermes_n8n_ref: "main"   # pin to a commit for reproducibility once validated
+hermes_n8n_dir: "{{ hermes_home }}/.hermes/mcp-servers/n8n"
+
+# Home Assistant MCP (remote streamable-HTTP). Reuses the existing HA MCP
+# endpoint (Claude config shows type: http at /api/mcp). Hermes defaults a
+# remote `url` to StreamableHTTP, so no `transport:` key is needed. URL must be
+# reachable FROM THE PI — the bare `homeassistant` hostname does NOT resolve on
+# k3s-2, so use an IP or a Pi-resolvable FQDN. Disabled until url is set.
+hermes_hass_mcp_enabled: false
+hermes_hass_mcp_url: "http://192.168.50.210:8123/api/mcp"   # Pi-reachable; /api/mcp returns 401 → token required
+
+# GitHub MCP (remote streamable-HTTP). Uses GitHub's OFFICIAL HOSTED server at
+# api.githubcopilot.com/mcp — no local Docker/Go binary on the Pi (the published
+# github-mcp-server is a Go/Docker image, a poor fit for the bundled-Node, no-
+# Docker Pi 4; the hosted endpoint needs nothing but a token). Hermes defaults a
+# remote `url` to StreamableHTTP, matching the HA entry above, so no `transport:`.
+# Auth is a Bearer PAT (fine-grained recommended, scoped to only the repos/perms
+# you want); it lives ONLY in the vaulted .env as ${GITHUB_MCP_TOKEN} and the
+# 0644 config.yaml references it from there. PRIVACY: this reaches OFF-HOMELAB to
+# GitHub — repo/issue/PR content and your query text leave the network. Default
+# posture is READ-ONLY (X-MCP-Readonly) so the agent can browse/search but not
+# push/merge/comment until you deliberately widen it. Optionally pin the tool
+# surface with a comma list of toolsets (X-MCP-Toolsets, e.g. "repos,issues,
+# pull_requests,context") to cut prompt bloat; empty = GitHub's default set.
+hermes_github_mcp_enabled: true
+hermes_github_mcp_url: "https://api.githubcopilot.com/mcp/"
+hermes_github_mcp_readonly: true    # send X-MCP-Readonly:true → no mutating tools (push/merge/comment). Flip false to allow writes.
+hermes_github_mcp_toolsets: ""      # optional CSV → X-MCP-Toolsets (e.g. "repos,issues,pull_requests,context"); empty = server default.
+
+# Agent identity + standing behaviour. SOUL.md becomes slot #1 of the system
+# prompt (replaces Hermes' DEFAULT_AGENT_IDENTITY; 20k char cap, security
+# scanned). Hermes does NOT self-edit SOUL.md — runtime learning goes to
+# MEMORY.md/USER.md and the Honcho block, never here (verified vs
+# agent/prompt_builder.py), so SOUL.md is admin-owned/static. We still SEED it
+# once and leave it alone, so a future hand-edit on the Pi isn't clobbered by a
+# re-run: force:false writes ONLY when the file is absent.
+hermes_soul_managed: true         # seed SOUL.md from the template if it is ABSENT
+hermes_soul_force: false          # NEVER overwrite an existing SOUL.md. Set true
+                                  # (e.g. -e hermes_soul_force=true) to deliberately re-seed.
+
+# Heavy reasoning tier = the model that `delegate_task` subagents run on. The
+# fast 9b gathers bounded evidence then delegates hard/multi-step problems; the
+# subagent runs on this model WITH ITS OWN TOOLS and returns a summary. LOCAL
+# (same Ollama) → personal/homelab context is allowed (unlike Perplexity).
+# When enabled the role renders a top-level `delegation:` block; when false,
+# delegate_task falls back to the parent model (the 9b) — pointless for
+# escalation, so leave OFF until the 35B is pulled AND the installed Hermes
+# build is confirmed to support delegation.model/base_url (see role README).
+# NB: co-residency is disproven on the 12GB card, so the first delegation per
+# burst cold-loads the ~24GB model (~86s) and evicts the 9b; they swap on
+# demand. num_ctx + keep_alive are handled SERVER-SIDE on Ollama, not here:
+# the /v1 endpoint ignores options.num_ctx (OLLAMA_CONTEXT_LENGTH governs it),
+# and keep_alive is OLLAMA_KEEP_ALIVE on the ollama deployment if ever needed.
+hermes_delegation_heavy_enabled: false
+hermes_heavy_model: "qwen3.6:35b-a3b"   # D5 heavy tier. gemma4:26b = benchmarked alternate
+                                        # (best tool-caller, ≥232k recall, smaller disk, slightly less crisp debug).
+hermes_heavy_base_url: "{{ hermes_ollama_base_url }}/v1"   # OpenAI-compatible endpoint, same node as the fast tier.
+hermes_heavy_api_key: "ollama"          # Ollama ignores it, but the OpenAI-compatible client wants a non-empty key.
+# Optional delegation run-control (defaults shown; uncomment to override):
+# hermes_delegation_max_iterations: 50           # heavy subagent tool-loop budget
+# hermes_delegation_max_concurrent_children: 3   # parallel subagents all contend for the single 35B
+#                                                # residency → consider 1 for the local heavy tier.
+
+# Honcho persistent memory (Plastic Labs) — swaps Hermes' built-in SQLite store
+# for a theory-of-mind Representation derived per turn. Deployed separately on the
+# x86 workload k3s cluster (homelab-k3s/honcho/, exposed at honcho.homecluster.co
+# behind the internal-nginx ingress); see the smart-assistant project. This role
+# only CLIENT-configures Hermes: it templates ~/.hermes/honcho.json (connection +
+# identity, non-secret) and sets `memory.provider: honcho` in config.yaml. The
+# plugin reads its config from ~/.hermes/honcho.json (verified against the
+# installed plugins/memory/honcho), with apiKey/baseUrl falling back to the
+# HONCHO_API_KEY / HONCHO_BASE_URL env vars — so the JWT lives ONLY in the vaulted
+# .env (HONCHO_API_KEY) and the 0644 honcho.json never holds the secret.
+# baseUrl is non-local + Honcho runs AUTH_USE_AUTH=true, so a workspace-scoped JWT
+# is REQUIRED. Mint it from the running deployment (its --workspace MUST equal
+# hermes_honcho_workspace) and put it in the vault as hermes_honcho_api_key:
+#   kubectl -n honcho exec deploy/honcho-api -- \
+#     python scripts/generate_jwt.py --workspace hermes --expires 1y --print-only
+# Leave OFF until Honcho is deployed AND the JWT is vaulted. The plugin fails open
+# (Hermes keeps running on SQLite if Honcho is unreachable), but keep it clean.
+hermes_honcho_enabled: false
+hermes_honcho_base_url: "https://honcho-api.homecluster.co"   # raw API host (the openconcho UI owns honcho.homecluster.co); non-local → JWT required
+hermes_honcho_workspace: "hermes"   # Honcho workspace ID; defaults to the "hermes" host key. MUST match the JWT scope.
+hermes_honcho_peer_name: "kudz"     # your user peer (no env/default fallback → must be set here)
+hermes_honcho_ai_peer: "hermes"     # agent peer; defaults to the "hermes" host key
+# Gateway is single-operator (Telegram): collapse every gateway runtime user onto
+# peer_name so messages don't spawn a separate peer keyed by Telegram UID.
+hermes_honcho_pin_user_peer: true
+
+# Filled in later, from a vaulted group_vars file (see role README / plan).
+hermes_telegram_bot_token: ""
+hermes_honcho_api_key: ""     # workspace-scoped Honcho JWT (see Honcho block above). Written to .env as HONCHO_API_KEY.
+hermes_perplexity_api_key: ""
+hermes_n8n_api_key: ""        # n8n: Settings → API. Enables hermes_n8n_enabled wiring.
+hermes_hass_mcp_token: ""     # HA long-lived access token (Profile → Security). /api/mcp needs it.
+hermes_github_mcp_token: ""   # GitHub PAT (fine-grained, least-priv) for the hosted GitHub MCP. Written to .env as GITHUB_MCP_TOKEN.

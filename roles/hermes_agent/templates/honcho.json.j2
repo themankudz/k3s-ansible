@@ -1,0 +1,19 @@
+{#
+  ~/.hermes/honcho.json — Hermes Honcho memory-provider client config.
+  Owned by the hermes_agent role. NON-SECRET only: connection + identity.
+  The apiKey is intentionally OMITTED — the plugin falls back to HONCHO_API_KEY
+  from .env (0600), so the secret never lands in this 0644 file. Root-level keys
+  are used (single Hermes instance); the plugin's resolution order is
+  host-block > root > env > default, and workspace/aiPeer default to the "hermes"
+  host key. JSON forbids comments, so this header is a Jinja comment and the body
+  is rendered from a dict via to_nice_json to guarantee valid JSON.
+#}
+{{
+  {
+    "baseUrl": hermes_honcho_base_url,
+    "workspace": hermes_honcho_workspace,
+    "peerName": hermes_honcho_peer_name,
+    "aiPeer": hermes_honcho_ai_peer,
+    "pinUserPeer": hermes_honcho_pin_user_peer | bool,
+  } | to_nice_json
+}}

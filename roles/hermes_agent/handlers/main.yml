@@ -1,0 +1,20 @@
+---
+- name: Reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+# Only acts when the gateway is meant to run; otherwise the unit stays stopped
+# (no surface configured yet) and a config change shouldn't start it.
+- name: Restart hermes-gateway
+  ansible.builtin.systemd:
+    name: hermes-gateway
+    state: restarted
+    daemon_reload: true
+  when: hermes_gateway_enabled | bool
+
+- name: Restart hermes-dashboard
+  ansible.builtin.systemd:
+    name: hermes-dashboard
+    state: restarted
+    daemon_reload: true
+  when: hermes_dashboard_enabled | bool

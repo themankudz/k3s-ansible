@@ -1,0 +1,264 @@
+---
+# Provision a host as a standalone Hermes Agent (bare-metal + systemd).
+# See roles/hermes_agent/README or smart-assistant plan for the full rationale.
+
+- name: Create hermes group
+  ansible.builtin.group:
+    name: "{{ hermes_group }}"
+    state: present
+
+- name: Create unprivileged hermes user
+  ansible.builtin.user:
+    name: "{{ hermes_user }}"
+    group: "{{ hermes_group }}"
+    home: "{{ hermes_home }}"
+    shell: /bin/bash
+    create_home: true
+    state: present
+
+# Pre-installing the installer's apt deps means its package step is a no-op,
+# so install.sh needs no sudo when run as the unprivileged hermes user.
+- name: Install Hermes OS prerequisites
+  ansible.builtin.apt:
+    name:
+      - build-essential
+      - python3-dev
+      - libffi-dev
+      - git
+      - ripgrep
+      - ffmpeg
+      - curl
+      - ca-certificates
+      # acl provides setfacl, required for Ansible to `become` the
+      # unprivileged hermes user when running the installer.
+      - acl
+      # python3-venv (ensurepip) lets git-installed MCP bridges (n8n) build
+      # their own venv with the SYSTEM python3 — Hermes' bundled venv doesn't
+      # cover them. Without it `python3 -m venv` fails on Debian/Ubuntu.
+      - python3-venv
+    state: present
+    update_cache: true
+
+- name: Stage the Hermes installer
+  ansible.builtin.get_url:
+    url: "{{ hermes_install_url }}"
+    dest: /tmp/hermes-install.sh
+    mode: "0755"
+    force: true
+
+- name: Install Hermes Agent
+  become: true
+  become_user: "{{ hermes_user }}"
+  ansible.builtin.command:
+    cmd: >-
+      /bin/bash /tmp/hermes-install.sh
+      {{ hermes_install_flags }}
+      {{ ('--commit ' + hermes_commit) if hermes_commit | length > 0 else '' }}
+    creates: "{{ hermes_home }}/.local/bin/hermes"
+  environment:
+    HOME: "{{ hermes_home }}"
+
+- name: Update Hermes Agent
+  become: true
+  become_user: "{{ hermes_user }}"
+  ansible.builtin.command:
+    cmd: >-
+      /bin/bash /tmp/hermes-install.sh
+      {{ hermes_install_flags }}
+      {{ ('--commit ' + hermes_commit) if hermes_commit | length > 0 else '' }}
+  environment:
+    HOME: "{{ hermes_home }}"
+  when: hermes_update | bool
+  changed_when: true
+
+# The ddgs web-search backend is import-gated: the plugin registers either way
+# but silently emits no web_search/web_extract tools unless `import ddgs`
+# succeeds inside the Hermes venv.
+- name: Install ddgs package into the Hermes venv (web_search backend)
+  become: true
+  become_user: "{{ hermes_user }}"
+  ansible.builtin.pip:
+    name: ddgs
+    virtualenv: "{{ hermes_home }}/.hermes/hermes-agent/venv"
+  when: hermes_web_backend == 'ddgs'
+
+# The Telegram gateway adapter is import-gated on python-telegram-bot, which
+# lives in Hermes' `messaging` optional-dependency group. `install.sh
+# --skip-setup` runs no wizard, so it never pulls the messaging extra — without
+# this the gateway starts but logs "python-telegram-bot not installed / No
+# adapter available for telegram" and serves cron only. Pin matches Hermes'
+# pyproject `messaging` extra (python-telegram-bot[webhooks]==22.6). Installed
+# only when a Telegram token is configured, mirroring the .env gating.
+- name: Install Telegram adapter deps into the Hermes venv (messaging extra)
+  become: true
+  become_user: "{{ hermes_user }}"
+  ansible.builtin.pip:
+    name: "python-telegram-bot[webhooks]==22.6"
+    virtualenv: "{{ hermes_home }}/.hermes/hermes-agent/venv"
+  when: hermes_telegram_bot_token | length > 0
+  notify: Restart hermes-gateway
+
+# Native Anthropic provider SDK (Hermes' [anthropic] extra). Not pulled by
+# install.sh --skip-setup. Inert until a model/delegation block selects
+# provider: anthropic; pre-installed so that path is ready.
+- name: Install Anthropic provider SDK into the Hermes venv
+  become: true
+  become_user: "{{ hermes_user }}"
+  ansible.builtin.pip:
+    name: "anthropic==0.86.0"
+    virtualenv: "{{ hermes_home }}/.hermes/hermes-agent/venv"
+  when: hermes_anthropic_extra | bool
+
+# Browser plugin deps: the Playwright pip package + its Chromium binary. Both
+# only sit on disk until a browser tool is invoked (see defaults note). Two
+# steps because `playwright install` downloads the browser separately from pip.
+- name: Install Playwright into the Hermes venv (browser plugin)
+  become: true
+  become_user: "{{ hermes_user }}"
+  ansible.builtin.pip:
+    name: playwright
+    virtualenv: "{{ hermes_home }}/.hermes/hermes-agent/venv"
+  when: hermes_browser_enabled | bool
+  notify: Restart hermes-gateway
+
+- name: Install Chromium for Playwright
+  become: true
+  become_user: "{{ hermes_user }}"
+  ansible.builtin.command:
+    cmd: "{{ hermes_home }}/.hermes/hermes-agent/venv/bin/playwright install chromium"
+  environment:
+    HOME: "{{ hermes_home }}"
+  register: hermes_playwright_chromium
+  changed_when: "'is already installed' not in hermes_playwright_chromium.stdout"
+  when: hermes_browser_enabled | bool
+
+# n8n MCP bridge: git-installed Python stdio server (its manifest installs into
+# its own .venv next to server.py). Cloned + bootstrapped declaratively here
+# instead of via `hermes mcp install` so our templated config.yaml stays the
+# single source of the mcp_servers block.
+- name: Clone the n8n MCP bridge
+  become: true
+  become_user: "{{ hermes_user }}"
+  ansible.builtin.git:
+    repo: "https://github.com/CyberSamuraiX/hermes-n8n-mcp.git"
+    dest: "{{ hermes_n8n_dir }}"
+    version: "{{ hermes_n8n_ref }}"
+  when: hermes_n8n_enabled | bool
+  notify: Restart hermes-gateway
+
+- name: Install n8n MCP bridge deps into its own venv
+  become: true
+  become_user: "{{ hermes_user }}"
+  ansible.builtin.pip:
+    requirements: "{{ hermes_n8n_dir }}/requirements.txt"
+    virtualenv: "{{ hermes_n8n_dir }}/.venv"
+    virtualenv_command: "python3 -m venv"
+  when: hermes_n8n_enabled | bool
+  notify: Restart hermes-gateway
+
+# Local fix for the upstream one-shot MCP-discovery race (see defaults and
+# files/patch_oneshot_mcp_wait.py). Hermes updates stash local changes, so this
+# re-applies after every upgrade; it fails the play if upstream refactored the
+# anchor (the cue to re-evaluate or disable the toggle).
+- name: Apply oneshot MCP-discovery wait patch
+  become: true
+  become_user: "{{ hermes_user }}"
+  ansible.builtin.script:
+    cmd: "patch_oneshot_mcp_wait.py {{ hermes_home }}/.hermes/hermes-agent/hermes_cli/oneshot.py"
+    executable: "{{ hermes_home }}/.hermes/hermes-agent/venv/bin/python"
+  register: hermes_oneshot_patch
+  changed_when: "'patched' in hermes_oneshot_patch.stdout"
+  when: hermes_oneshot_mcp_wait_patch | bool
+
+# Non-secret model selection. We own this file outright (the install ran with
+# --skip-setup, so the wizard never wrote a model block). Confirm key names on
+# first run via `hermes model` / the installed cli-config.yaml.example.
+- name: Template Hermes config.yaml (model / provider)
+  ansible.builtin.template:
+    src: hermes-config.yaml.j2
+    dest: "{{ hermes_home }}/.hermes/config.yaml"
+    owner: "{{ hermes_user }}"
+    group: "{{ hermes_group }}"
+    mode: "0644"
+  notify: Restart hermes-gateway
+
+# Agent identity / standing behaviour = slot #1 of the system prompt. SEED-ONCE:
+# Hermes never self-edits SOUL.md (learning lands in MEMORY.md/USER.md/Honcho),
+# so force:false writes it only when ABSENT — the first run seeds it, later runs
+# leave a hand-tuned file untouched. Re-seed deliberately with
+# -e hermes_soul_force=true. The handler fires only on an actual change.
+- name: Seed Hermes SOUL.md (agent identity / standing behaviour)
+  ansible.builtin.template:
+    src: SOUL.md.j2
+    dest: "{{ hermes_home }}/.hermes/SOUL.md"
+    owner: "{{ hermes_user }}"
+    group: "{{ hermes_group }}"
+    mode: "0644"
+    force: "{{ hermes_soul_force | default(false) | bool }}"
+  when: hermes_soul_managed | bool
+  notify: Restart hermes-gateway
+
+# Honcho memory-provider client config (~/.hermes/honcho.json). NON-SECRET
+# (0644): baseUrl + workspace + peer identity only — the JWT is injected via
+# HONCHO_API_KEY in .env (the plugin falls back to that env var). config.yaml's
+# memory.provider selects the backend. Written only when enabled; otherwise
+# Hermes keeps using its built-in SQLite memory. Re-run with the toggle on after
+# the Honcho deploy is live and the JWT is vaulted.
+- name: Template Hermes honcho.json (memory provider config)
+  ansible.builtin.template:
+    src: honcho.json.j2
+    dest: "{{ hermes_home }}/.hermes/honcho.json"
+    owner: "{{ hermes_user }}"
+    group: "{{ hermes_group }}"
+    mode: "0644"
+  when: hermes_honcho_enabled | bool
+  notify: Restart hermes-gateway
+
+# Secrets / endpoint env. Managed block so any installer-written .env content
+# is preserved. 0600 — may hold the Telegram token / API keys later.
+- name: Manage Hermes .env (endpoints / secrets)
+  ansible.builtin.blockinfile:
+    path: "{{ hermes_home }}/.hermes/.env"
+    block: "{{ lookup('template', 'hermes.env.j2') }}"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK - hermes_agent"
+    create: true
+    owner: "{{ hermes_user }}"
+    group: "{{ hermes_group }}"
+    mode: "0600"
+  notify: Restart hermes-gateway
+
+- name: Template hermes-gateway systemd unit
+  ansible.builtin.template:
+    src: hermes-gateway.service.j2
+    dest: "{{ systemd_dir }}/hermes-gateway.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd daemon
+    - Restart hermes-gateway
+
+- name: Set hermes-gateway service state
+  ansible.builtin.systemd:
+    name: hermes-gateway
+    enabled: "{{ hermes_gateway_enabled | bool }}"
+    state: "{{ 'started' if hermes_gateway_enabled | bool else 'stopped' }}"
+    daemon_reload: true
+
+- name: Template hermes-dashboard systemd unit
+  ansible.builtin.template:
+    src: hermes-dashboard.service.j2
+    dest: "{{ systemd_dir }}/hermes-dashboard.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd daemon
+    - Restart hermes-dashboard
+
+- name: Set hermes-dashboard service state
+  ansible.builtin.systemd:
+    name: hermes-dashboard
+    enabled: "{{ hermes_dashboard_enabled | bool }}"
+    state: "{{ 'started' if hermes_dashboard_enabled | bool else 'stopped' }}"
+    daemon_reload: true
