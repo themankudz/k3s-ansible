@@ -16,13 +16,37 @@ hermes_update: false              # set true to `git pull --ff-only` on re-run
 # Model / provider. provider "ollama" is a Hermes alias that maps to a custom
 # OpenAI-compatible endpoint, so base_url targets Ollama's /v1 surface.
 hermes_provider: ollama
-hermes_model: "gemma4:e4b"        # Fast/resident tier. Switched from qwen3.5:9b 2026-06-20: qwen3.5/3.6 are
-                                  # hybrid-SSM → single-slot serialization (Hermes blocked behind Honcho
-                                  # deriver/dialectic + Hermes title-gen on one lane = slow). gemma4:e4b is SWA
-                                  # → honors OLLAMA_NUM_PARALLEL (real concurrent slots) + ~3.4GB VRAM + prompt-
-                                  # cache reuse. Trade-off: e4b is a weaker debugger (per v1.3.0 benchmarks) +
-                                  # ~131k ctx wall, so hard reasoning is escalated to the qwen3.6:35b-a3b heavy
-                                  # tier via delegate_task (D7). See memory ollama-ssm-vs-swa-concurrency.
+# Fast/resident tier. Switched from qwen3.5:9b 2026-06-20: qwen3.5/3.6 are
+# hybrid-SSM → single-slot serialization (Hermes blocked behind Honcho
+# deriver/dialectic + Hermes title-gen on one lane = slow). gemma4:e4b is SWA
+# → honors OLLAMA_NUM_PARALLEL (real concurrent slots) + ~3.5GB VRAM + prompt-
+# cache reuse. Trade-off: e4b is a weaker debugger (per v1.3.0 benchmarks) +
+# ~131k ctx wall, so hard reasoning is escalated to the qwen3.6:35b-a3b heavy
+# tier via delegate_task (D7). See memory ollama-ssm-vs-swa-concurrency.
+#
+# 2026-06-21: Hermes runs a temperature-PINNED derived tag, not the stock model.
+# Stock gemma4:e4b defaults to temperature 1.0; at that temp the model
+# intermittently NARRATES tool calls as prose or emits empty-argument calls
+# instead of real structured tool_calls — measured 4/10 failures on the hard
+# skill_manage case, and the root cause of the "claimed success but no artifact"
+# bug (a created skill/file that never existed). Hermes sends NO temperature
+# (auxiliary_client._fixed_temperature_for_model returns None for ollama models),
+# so Ollama falls back to the model's own default — therefore we bake the
+# temperature INTO the model via an `ollama create` parameter layer. That layer
+# shares the base weights blob: no extra VRAM, no extra disk, same speed, same
+# SWA concurrency. Dropping the default to 0.3 cut failures to ~0/10 (verified
+# 2026-06-21 against the live Ollama, called the way Hermes calls it: streaming,
+# no temperature sent). The "Ensure temperature-pinned Ollama model" task creates
+# {{ hermes_model }} FROM {{ hermes_model_base }} with temperature
+# {{ hermes_model_temperature }}. NOTE: streaming still leaks gemma's channel
+# scaffolding into content occasionally (cosmetic; the call still executes) — a
+# separate upstream bug; Hermes hardcodes stream=True with no supported off-switch.
+# NB 2026-06-21: gemma4:26b was trialled as the agent tier (better tool-calling/accuracy)
+# but reverted — ~80% CPU offload on the 12GB card made it too slow and starved Honcho.
+# Operative values live in group_vars/all/main.yml (which OVERRIDES these defaults).
+hermes_model_base: "gemma4:e4b"          # upstream tag (must be pulled on the Ollama node)
+hermes_model_temperature: 0.3            # baked sampling temperature for the agent tier
+hermes_model: "gemma4:e4b-t03"           # tuned tag Hermes runs (base + pinned temperature)
 hermes_ollama_base_url: "http://192.168.50.235:11434"
 # Hermes refuses models with <64k context for reliable tool use, so this value
 # bypasses that gate (via context_length). It also tells Hermes how large the
@@ -154,6 +178,12 @@ hermes_soul_force: false          # NEVER overwrite an existing SOUL.md. Set tru
 # the /v1 endpoint ignores options.num_ctx (OLLAMA_CONTEXT_LENGTH governs it),
 # and keep_alive is OLLAMA_KEEP_ALIVE on the ollama deployment if ever needed.
 hermes_delegation_heavy_enabled: false
+hermes_heavy_provider: ""               # empty = inherit top-level provider (ollama) for a LOCAL heavy tier.
+                                        # Set to "openai" for a CLOUD endpoint, else Hermes injects an Ollama-style
+                                        # `options` block the real OpenAI API 400s on (proven 2026-06-28). See config.yaml.j2.
+hermes_heavy_api_mode: ""               # wire format override (chat_completions|codex_responses|anthropic_messages|
+                                        # bedrock_converse). EMPTY = Hermes auto-detects. Set codex_responses for
+                                        # OpenAI gpt-5/reasoning (Responses API → max_output_tokens, not max_tokens).
 hermes_heavy_model: "qwen3.6:35b-a3b"   # D5 heavy tier. gemma4:26b = benchmarked alternate
                                         # (best tool-caller, ≥232k recall, smaller disk, slightly less crisp debug).
 hermes_heavy_base_url: "{{ hermes_ollama_base_url }}/v1"   # OpenAI-compatible endpoint, same node as the fast tier.
@@ -191,8 +221,12 @@ hermes_honcho_pin_user_peer: true
 
 # Filled in later, from a vaulted group_vars file (see role README / plan).
 hermes_telegram_bot_token: ""
+hermes_telegram_allowed_users: ""   # NON-secret. Comma-separated Telegram user IDs allowed to use the bot;
+                                    # empty = no allow-list. Written to .env as TELEGRAM_ALLOWED_USERS.
 hermes_honcho_api_key: ""     # workspace-scoped Honcho JWT (see Honcho block above). Written to .env as HONCHO_API_KEY.
 hermes_perplexity_api_key: ""
+hermes_openai_api_key: ""     # OpenAI key for the CLOUD heavy/delegation tier (D9). Written to .env as
+                              # OPENAI_API_KEY; config.yaml references it as ${OPENAI_API_KEY} (never inlined into the 0644 file).
 hermes_n8n_api_key: ""        # n8n: Settings → API. Enables hermes_n8n_enabled wiring.
 hermes_hass_mcp_token: ""     # HA long-lived access token (Profile → Security). /api/mcp needs it.
 hermes_github_mcp_token: ""   # GitHub PAT (fine-grained, least-priv) for the hosted GitHub MCP. Written to .env as GITHUB_MCP_TOKEN.

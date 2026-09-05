@@ -170,6 +170,49 @@
   changed_when: "'patched' in hermes_oneshot_patch.stdout"
   when: hermes_oneshot_mcp_wait_patch | bool
 
+# Ensure the temperature-pinned derived model exists on the Ollama node BEFORE
+# config.yaml (which references {{ hermes_model }}) is written. This bakes the
+# sampling temperature into the model so Hermes — which sends no temperature —
+# gets a stable, tool-calling-reliable default. See the hermes_model rationale in
+# defaults/main.yml. The `from` + `parameters` create reuses the base weights
+# blob (no extra VRAM/disk). Idempotent: we check the live params first and only
+# (re)create when the tag is missing or its temperature has drifted.
+- name: Probe temperature-pinned Ollama model
+  ansible.builtin.uri:
+    url: "{{ hermes_ollama_base_url }}/api/show"
+    method: POST
+    body_format: json
+    body:
+      name: "{{ hermes_model }}"
+    status_code: [200, 404]
+  register: hermes_model_show
+  changed_when: false
+  # Read-only probe — run it even under --check so the create gate below has a
+  # real status to evaluate (otherwise check mode skips it and the `when` errors).
+  check_mode: false
+
+- name: Ensure temperature-pinned Ollama model
+  ansible.builtin.uri:
+    url: "{{ hermes_ollama_base_url }}/api/create"
+    method: POST
+    body_format: json
+    body:
+      model: "{{ hermes_model }}"
+      from: "{{ hermes_model_base }}"
+      parameters:
+        temperature: "{{ hermes_model_temperature | float }}"
+    status_code: [200]
+    timeout: 120
+  register: hermes_model_create
+  changed_when: true
+  # /api/show returns `parameters` as a raw Modelfile string
+  # ("temperature   0.3\ntop_k   64\n..."). (Re)create when the tag is absent or
+  # its baked temperature differs from what we want.
+  when: >-
+    (hermes_model_show.status | default(404)) == 404
+    or (hermes_model_temperature | string)
+       not in (hermes_model_show.json.parameters | default(''))
+
 # Non-secret model selection. We own this file outright (the install ran with
 # --skip-setup, so the wizard never wrote a model block). Confirm key names on
 # first run via `hermes model` / the installed cli-config.yaml.example.
