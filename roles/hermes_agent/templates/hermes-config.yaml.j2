@@ -47,8 +47,26 @@ memory:
 # pass any heavy constraints in the delegate_task context (see SOUL.md). num_ctx
 # + keep_alive are NOT delegation keys — they're governed server-side on Ollama.
 delegation:
+{% if hermes_heavy_provider | length > 0 %}
+  # provider must be set for a CLOUD heavy tier: leaving it to inherit the top-level
+  # `ollama` alias makes Hermes inject an Ollama-style `options` block, which Ollama's
+  # /v1 tolerates but the real OpenAI API rejects with 400 "Unknown parameter: 'options'"
+  # (proven via the delegation tap 2026-06-28). `openai` sends a clean Chat Completions body.
+  provider: "{{ hermes_heavy_provider }}"
+{% endif %}
   model: "{{ hermes_heavy_model }}"
+{% if hermes_heavy_api_mode | length > 0 %}
+  # Wire format. For OpenAI gpt-5/reasoning models use codex_responses (the Responses API): it sends
+  # max_output_tokens, NOT the legacy max_tokens that those models 400 on (proven 2026-06-28), and
+  # avoids the Ollama `options` block. chat_completions is fine for ollama/non-reasoning endpoints.
+  api_mode: "{{ hermes_heavy_api_mode }}"
+{% endif %}
+{% if hermes_heavy_base_url | length > 0 %}
+  # Omit base_url for a provider-prefixed cloud model (e.g. openai/gpt-5-mini): the provider then uses
+  # its real endpoint and strips the prefix. Setting base_url makes Hermes pass the literal prefixed id
+  # through → OpenAI 400 "invalid model ID" (proven 2026-06-28). Only set base_url for a custom endpoint.
   base_url: "{{ hermes_heavy_base_url }}"
+{% endif %}
   api_key: "{{ hermes_heavy_api_key }}"
 {% if hermes_delegation_max_iterations is defined %}
   max_iterations: {{ hermes_delegation_max_iterations }}

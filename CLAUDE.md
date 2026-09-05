@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. For generic Ansible/repo conventions (source-of-truth rules, coding style, molecule/testing workflow, commit message format) see [AGENTS.md](AGENTS.md) — this file covers our specific cluster setup, not general repo conventions.
 
 ## Related Repository
 
