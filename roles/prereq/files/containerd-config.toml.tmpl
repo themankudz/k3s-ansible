@@ -1,0 +1,11 @@
+# Extends k3s's auto-generated containerd config (k3s merges this file in
+# rather than replacing it — see https://docs.k3s.io/advanced#configuring-containerd).
+#
+# containerd 2.1+ pulls images via the Transfer Service by default, so
+# max_concurrent_downloads must be set here rather than under the older
+# io.containerd.cri.v1.images plugin. Caps how many layers a single image
+# pull fetches in parallel; combined with kubelet's serializeImagePulls,
+# this keeps each node from bursting many concurrent requests at Harbor's
+# ghcr.io/docker.io pull-through caches during a mass ArgoCD sync.
+[plugins.'io.containerd.transfer.v1.local']
+  max_concurrent_downloads = 2

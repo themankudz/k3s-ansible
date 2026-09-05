@@ -1,8 +1,10 @@
 ---
-# Rolls out kubelet config changes to a live cluster one node at a time.
-# Agents restart immediately; masters restart after agents to preserve
-# cluster availability.
-- name: Update kubelet config on agent nodes
+# Rolls out kubelet + containerd node-runtime config changes to a live
+# cluster one node at a time. Agents restart immediately; masters restart
+# after agents to preserve cluster availability. Source files are the same
+# ones roles/prereq deploys on a fresh node, so a normal site.yml run and
+# this ad-hoc rollout can never drift apart.
+- name: Update node runtime config on agent nodes
   hosts: node
   gather_facts: true
   become: true
@@ -16,13 +18,20 @@
         backup: true
       notify: Restart k3s-node
 
+    - name: Deploy containerd config template
+      ansible.builtin.copy:
+        src: roles/prereq/files/containerd-config.toml.tmpl
+        dest: /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
+        backup: true
+      notify: Restart k3s-node
+
   handlers:
     - name: Restart k3s-node
       ansible.builtin.service:
         name: k3s-node
         state: restarted
 
-- name: Update kubelet config on master nodes
+- name: Update node runtime config on master nodes
   hosts: master
   gather_facts: true
   become: true
@@ -33,6 +42,13 @@
       ansible.builtin.copy:
         src: roles/prereq/files/kubelet.config
         dest: /data/k3s/kubelet.config
+        backup: true
+      notify: Restart k3s
+
+    - name: Deploy containerd config template
+      ansible.builtin.copy:
+        src: roles/prereq/files/containerd-config.toml.tmpl
+        dest: /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
         backup: true
       notify: Restart k3s
 

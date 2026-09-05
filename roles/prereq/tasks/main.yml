@@ -105,6 +105,19 @@
     backup: true
   notify: Restart k3s
 
+- name: Create containerd config directory
+  file:
+    path: /var/lib/rancher/k3s/agent/etc/containerd
+    state: directory
+    mode: "0755"
+
+- name: Add Custom containerd config template
+  copy:
+    src: containerd-config.toml.tmpl
+    dest: /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
+    backup: true
+  notify: Restart k3s
+
 - name: Update unattended upgrades inhibit delay 90 seconds
   lineinfile:
     line: InhibitDelayMaxSec=90
@@ -113,5 +126,3 @@
     insertafter: EOF
     path: /usr/lib/systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf
   tags: inhibit
-
-  
