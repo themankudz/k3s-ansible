@@ -3,6 +3,8 @@
 ansible.cfg
 .DS_Store
 kubeconfig
+.ansible/
+zIgnore/
 
 # ansible-vault password file and any plaintext secret dumps
 .vault_pass
