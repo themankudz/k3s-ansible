@@ -9,20 +9,28 @@
   run_once: true
 
 - name: Delete outdated metallb replicas
+  # Must check every ReplicaSet matching the selector, not just .items[0] (the
+  # previous version of this script) — the API doesn't guarantee ordering, and
+  # once the new controller Deployment has already rolled out (its ReplicaSet
+  # scaled to the desired replica count, the old one to 0), .items[0] can just
+  # as easily be the already-correct new RS, silently leaving the stale old
+  # one behind. That stale RS still carries the same component=controller,
+  # app=metallb labels, so the very next task ("Wait for MetalLB resources")
+  # selector-matches it too — and since its status.readyReplicas et al. can
+  # never reach 1, kubectl wait exhausts every retry and eventually fails the
+  # whole play. Hit for real on 2026-09-06 upgrading homelab-cluster off
+  # metallb v0.15.3.
   ansible.builtin.shell: |-
     set -o pipefail
 
-    REPLICAS=$({{ k3s_kubectl_binary | default('k3s kubectl') }} --namespace='metallb-system' get replicasets \
+    {{ k3s_kubectl_binary | default('k3s kubectl') }} --namespace='metallb-system' get replicasets \
       -l 'component=controller,app=metallb' \
-      -o jsonpath='{.items[0].spec.template.spec.containers[0].image}, {.items[0].metadata.name}' 2>/dev/null || true)
-    REPLICAS_SETS=$(echo ${REPLICAS} | grep -v '{{ metal_lb_controller_tag_version }}' | sed -e "s/^.*\s//g")
-    if [ -n "${REPLICAS_SETS}" ] ; then
-      for REPLICAS in "${REPLICAS_SETS}"
-      do
-        {{ k3s_kubectl_binary | default('k3s kubectl') }} --namespace='metallb-system' \
-          delete rs "${REPLICAS}"
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.template.spec.containers[0].image}{"\n"}{end}' 2>/dev/null \
+    | while IFS=$'\t' read -r NAME IMAGE; do
+        if [ -n "${NAME}" ] && [[ "${IMAGE}" != *'{{ metal_lb_controller_tag_version }}'* ]]; then
+          {{ k3s_kubectl_binary | default('k3s kubectl') }} --namespace='metallb-system' delete rs "${NAME}" --ignore-not-found
+        fi
       done
-    fi
   args:
     executable: /bin/bash
   changed_when: false
