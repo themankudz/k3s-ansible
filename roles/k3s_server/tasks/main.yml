@@ -104,7 +104,7 @@
             expected_control_plane_names: >-
               {{
                 groups[group_name_master | default('master')]
-                | map('extract', hostvars, 'ansible_hostname')
+                | map('extract', hostvars, ['ansible_facts', 'hostname'])
                 | list
               }}
 
@@ -183,24 +183,24 @@
 
 - name: Create directory .kube
   ansible.builtin.file:
-    path: "{{ ansible_user_dir }}/.kube"
+    path: "{{ ansible_facts['user_dir'] }}/.kube"
     state: directory
-    owner: "{{ ansible_user_id }}"
+    owner: "{{ ansible_facts['user_id'] }}"
     mode: u=rwx,g=rx,o=
 
 - name: Copy config file to user home directory
   ansible.builtin.copy:
     src: /etc/rancher/k3s/k3s.yaml
-    dest: "{{ ansible_user_dir }}/.kube/config"
+    dest: "{{ ansible_facts['user_dir'] }}/.kube/config"
     remote_src: true
-    owner: "{{ ansible_user_id }}"
+    owner: "{{ ansible_facts['user_id'] }}"
     mode: u=rw,g=,o=
 
 - name: Configure kubectl cluster to {{ endpoint_url }}
   ansible.builtin.command: >-
     {{ k3s_kubectl_binary | default('k3s kubectl') }} config set-cluster default
       --server={{ endpoint_url }}
-      --kubeconfig {{ ansible_user_dir }}/.kube/config
+      --kubeconfig {{ ansible_facts['user_dir'] }}/.kube/config
   changed_when: true
   vars:
     endpoint_url: >-

@@ -10,6 +10,10 @@
       - apt-listchanges
     state: present
     update_cache: true
+    # See roles/mail_relay/tasks/main.yml for why this is needed: without it,
+    # this task reports changed=true on every run purely from the cache
+    # refresh, breaking upgrade-k3s.yml's idempotency guarantee.
+    cache_valid_time: 3600
 
 - name: Configure periodic apt activities
   ansible.builtin.template:

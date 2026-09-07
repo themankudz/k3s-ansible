@@ -25,7 +25,7 @@
   ansible.builtin.command:
     cmd: >-
       {{ k3s_kubectl_binary | default('k3s kubectl') }} get node
-      {{ hostvars[joining_master].ansible_hostname }}
+      {{ hostvars[joining_master]['ansible_facts']['hostname'] }}
   delegate_to: "{{ groups[group_name_master | default('master')][0] }}"
   register: joined_master
   until: joined_master.rc == 0

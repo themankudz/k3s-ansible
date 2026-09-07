@@ -3,7 +3,7 @@
 
 - name: Map host architecture to release arch
   ansible.builtin.set_fact:
-    _otelcol_arch: "{{ _otelcol_arch_map[ansible_architecture] | default(ansible_architecture) }}"
+    _otelcol_arch: "{{ _otelcol_arch_map[ansible_facts['architecture']] | default(ansible_facts['architecture']) }}"
   vars:
     _otelcol_arch_map:
       aarch64: arm64

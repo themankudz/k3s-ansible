@@ -18,7 +18,7 @@
     mode: "0644"
   tags: apt-cacher
   when:
-    - ansible_os_family == "Debian"
+    - ansible_facts['os_family'] == "Debian"
     - apt_proxy_http_url is defined
 
 - name: Install base packages
@@ -26,6 +26,10 @@
     name: "{{ base_packages }}"
     state: present
     update_cache: true
+    # See roles/mail_relay/tasks/main.yml for why this is needed: without it,
+    # this task reports changed=true on every run purely from the cache
+    # refresh, even when base_packages is already fully converged.
+    cache_valid_time: 3600
   when: base_packages | length > 0
 
 - name: Enable IPv4 forwarding

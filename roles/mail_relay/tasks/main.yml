@@ -9,7 +9,7 @@
     name: postfix
     question: postfix/mailname
     vtype: string
-    value: "{{ ansible_hostname }}.{{ mail_hostname }}"
+    value: "{{ ansible_facts['hostname'] }}.{{ mail_hostname }}"
   tags: install
 
 - name: Set postfix debconf - mailer type
@@ -28,6 +28,11 @@
       - mailutils
     state: present
     update_cache: true
+    # Without this, the apt module refreshes /var/lib/apt/lists on every run
+    # and reports changed=true for the refresh alone, even when no package
+    # actually needed installing — breaking upgrade-k3s.yml's idempotency
+    # guarantee (a converged host must report changed=0 on a repeat run).
+    cache_valid_time: 3600
   tags: install
 
 - name: Configure postfix main.cf
@@ -65,7 +70,7 @@
     - Restart postfix
 
 - name: Send test email
-  ansible.builtin.command: 'echo test | mutt -s "{{ ansible_hostname }} test" {{ mail_relay_test_recipient }}'
+  ansible.builtin.command: "echo test | mutt -s \"{{ ansible_facts['hostname'] }} test\" {{ mail_relay_test_recipient }}" # noqa yaml[line-length]
   changed_when: false
   when:
     - mail_relay_send_test | bool

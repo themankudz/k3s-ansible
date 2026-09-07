@@ -6,7 +6,7 @@
     owner: root
     group: root
     mode: "0644"
-  when: ansible_hostname == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_hostname']
+  when: ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
 
 - name: Download vip cloud provider manifest to first master
   ansible.builtin.get_url:
@@ -19,7 +19,7 @@
   retries: "{{ download_retries }}"
   delay: "{{ download_delay }}"
   until: kube_vip_manifest_download is succeeded
-  when: ansible_hostname == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_hostname']
+  when: ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
 
 - name: Copy kubevip configMap manifest to first master
   ansible.builtin.template:
@@ -28,4 +28,4 @@
     owner: root
     group: root
     mode: "0644"
-  when: ansible_hostname == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_hostname']
+  when: ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]

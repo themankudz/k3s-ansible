@@ -83,7 +83,7 @@
   no_log: true
   register: k3s_input_firewall_rules
 
-- name: Ping the primary Kubernetes API address from {{ ansible_hostname }}
+- name: Ping the primary Kubernetes API address from {{ ansible_facts['hostname'] }}
   ansible.builtin.command:
     argv:
       - ping
@@ -97,7 +97,7 @@
   no_log: true
   register: k3s_primary_api_ping
 
-- name: Probe primary Kubernetes API from {{ ansible_hostname }}
+- name: Probe primary Kubernetes API from {{ ansible_facts['hostname'] }}
   ansible.builtin.wait_for:
     host: "{{ hostvars[groups[group_name_master | default('master')][0]].k3s_node_ip | split(',') | first }}"
     port: 6443
@@ -122,7 +122,7 @@
   become: false
   ansible.builtin.template:
     src: content.j2
-    dest: "{{ log_destination }}/k3s-init@{{ ansible_hostname }}.log"
+    dest: "{{ log_destination }}/k3s-init@{{ ansible_facts['hostname'] }}.log"
     mode: "0644"
   vars:
     content: |
@@ -137,7 +137,7 @@
   become: false
   ansible.builtin.template:
     src: content.j2
-    dest: "{{ log_destination }}/network@{{ ansible_hostname }}.log"
+    dest: "{{ log_destination }}/network@{{ ansible_facts['hostname'] }}.log"
     mode: "0644"
   vars:
     content: |
