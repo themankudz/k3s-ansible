@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
 prereq_defaults="$repo_root/roles/prereq/defaults/main.yml"
-prereq_tasks="$repo_root/roles/prereq/tasks/main.yml"
+prereq_tasks="$repo_root/roles/prereq/tasks/baseline.yml"
 
 # #670: k3s recommends swap be disabled on all nodes. The prereq role must expose
 # a disable_swap toggle (defaulting to true) that turns swap off now and comments

@@ -1,0 +1,1080 @@
+---
+# Safe rolling k3s upgrade playbook for an ALREADY-ESTABLISHED multi-master HA
+# cluster: bumps k3s (and optionally kube-vip/MetalLB) in place, one node at a
+# time, verifying real cluster health at every step.
+#
+# Why this playbook exists and is NOT part of site.yml/roles/k3s_server:
+# a 2026-09 upstream merge restructured roles/k3s_server around a
+# fresh-bootstrap-only model. site.yml now unconditionally stops k3s.service
+# on every master in one step (no serial: anywhere in site.yml), then brings
+# up only the first master alone via a transient --cluster-init unit and
+# waits for its own /readyz. A lone etcd member of an already-established
+# N-member cluster can never reach quorum by itself, so running site.yml
+# against a live cluster deadlocks and leaves every master's real service
+# stopped. Upstream's own README now says as much: the version variables are
+# for a fresh install only, and upgrading an existing cluster "remain[s]
+# manual operational step[s]". See upgrade-plan.md for the full incident this
+# playbook was written to recover from and to prevent recurring.
+#
+# NEVER run site.yml against a live cluster. It remains fresh-bootstrap-only.
+#
+# Core safety property, adapted from the official (separate) k3s-io/k3s-ansible
+# project's playbooks/upgrade.yml: serial: 1 over the masters, each host
+# stopping only its own service, swapping only its own binary, restarting only
+# itself, before Ansible even looks at the next host. No node is ever special
+# here — there is no bootstrap/primary/--cluster-init step anywhere below.
+#
+# Play ordering (masters before agents) is required by Kubernetes'
+# version-skew policy: a kubelet may run behind the API server, never ahead.
+# This differs deliberately from update-kubelet-config.yml's agents-first
+# ordering — that one is a config-only change with no version-skew concern.
+#
+# Explicit non-goals:
+#   - Does not touch Calico/Cilium (calico_iface/cilium_iface are undefined
+#     on both clusters this repo manages).
+#   - Does not re-fetch ./kubeconfig.
+#   - Does not remediate an unhealthy Longhorn cluster automatically — Play 1
+#     aborts the whole run rather than trying to fix storage itself.
+#
+# Cluster-specific caveat: on workload-cluster, all three master nodes run at
+# 89-91% CPU *requests* and several PodDisruptionBudgets (ingress-nginx,
+# per-node Longhorn instance-managers) report ALLOWED DISRUPTIONS: 0, so
+# draining a node can hang or leave the other two badly oversubscribed. Until
+# CPU headroom improves there, run this playbook against workload-cluster with
+# -e k3s_upgrade_drain=false. The k3s_upgrade_drain: true default stays
+# correct for a healthy cluster with real headroom (e.g. homelab-cluster).
+#
+# MetalLB header warning: Play 5's metallb.yml task downloads a fresh
+# metallb-native.yaml from upstream and rewrites namespace/CRDs/RBAC/
+# controller/speaker. The speaker DaemonSet restart briefly stops L2 ARP
+# announcements per node (a few seconds of LB blackhole per node is
+# expected). Read MetalLB's release notes for CRD/API changes across minors.
+#
+# Usage:
+#   ansible-playbook upgrade-k3s.yml -i inventory/<cluster>/hosts.ini
+#   ansible-playbook upgrade-k3s.yml -i inventory/<cluster>/hosts.ini --tags addons
+#   ansible-playbook upgrade-k3s.yml -i inventory/<cluster>/hosts.ini -e k3s_upgrade_drain=false
+
+- name: Preflight checks and plan summary
+  hosts: k3s_cluster
+  gather_facts: true
+  become: true
+  tags: [always]
+  vars: &upgrade_vars
+    k3s_upgrade_drain: true
+    k3s_upgrade_drain_timeout: 300s
+    k3s_upgrade_peer_readyz_retries: 30
+    k3s_upgrade_peer_readyz_delay: 5
+    k3s_upgrade_service_retries: 30
+    k3s_upgrade_service_delay: 10
+    k3s_upgrade_readyz_retries: 60
+    k3s_upgrade_readyz_delay: 5
+    k3s_upgrade_node_ready_timeout: 300s
+    k3s_upgrade_version_retries: 12
+    k3s_upgrade_version_delay: 5
+    k3s_upgrade_check_image_pulls: true
+    k3s_upgrade_settle_minutes: 1
+    k3s_upgrade_agent_serial: 1
+    k3s_upgrade_etcd_snapshot: true
+    k3s_upgrade_allow_downgrade: false
+    k3s_upgrade_max_minor_skew: 1
+    k3s_upgrade_allow_single_master: false
+    longhorn_check: true
+    longhorn_namespace: longhorn-system
+  environment: "{{ proxy_env | default({}) }}"
+  tasks:
+    - name: Assert k3s_version has the expected vX.Y.Z+k3sN shape
+      ansible.builtin.assert:
+        that: k3s_version is match('^v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+$')
+        fail_msg: >-
+          k3s_version ({{ k3s_version }}) does not match vX.Y.Z+k3sN —
+          refusing to run against a malformed target version.
+      run_once: true
+
+    - name: Assert the cluster has more than one master unless explicitly allowed
+      ansible.builtin.assert:
+        that: (groups['master'] | length) > 1 or k3s_upgrade_allow_single_master
+        fail_msg: >-
+          Only {{ groups['master'] | length }} master(s) in inventory. The
+          pre-stop peer-quorum gate needs at least 2 masters to mean anything.
+          Set -e k3s_upgrade_allow_single_master=true to proceed anyway (there
+          is no quorum to protect on a single-master cluster).
+      run_once: true
+
+    - name: Assert every node in the cluster currently reports Ready
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --context {{ kubectl_context }}
+          wait --for=condition=Ready nodes --all --timeout=10s
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+      check_mode: false
+
+    - name: Get node names known to the cluster right now
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --context {{ kubectl_context }}
+          get nodes -o jsonpath='{.items[*].metadata.name}'
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+      check_mode: false
+      register: k3s_upgrade_node_names_raw
+
+    - name: Assert every inventory host maps to an actual cluster node
+      ansible.builtin.assert:
+        that: (k3s_upgrade_expected_names | difference(k3s_upgrade_node_names_raw.stdout.split())) | length == 0
+        fail_msg: >-
+          Inventory hosts
+          {{ k3s_upgrade_expected_names | difference(k3s_upgrade_node_names_raw.stdout.split()) }}
+          have no matching node object in the cluster right now — inventory
+          has drifted from reality.
+      vars:
+        k3s_upgrade_expected_names: "{{ groups['k3s_cluster'] | map('extract', hostvars, ['ansible_facts', 'hostname']) | list }}" # noqa yaml[line-length]
+      run_once: true
+
+    - name: Read the currently running version from the primary master
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --context {{ kubectl_context }}
+          get node {{ hostvars[groups['master'][0]]['ansible_facts']['hostname'] }}
+          -o jsonpath='{.status.nodeInfo.kubeletVersion}'
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+      check_mode: false
+      register: k3s_upgrade_current_cluster_version
+
+    - name: Compute sanitised semver strings for the skew/downgrade guards
+      ansible.builtin.set_fact:
+        k3s_upgrade_current_semver: >-
+          {{ k3s_upgrade_current_cluster_version.stdout | regex_replace('^v', '') | regex_replace('\+k3s[0-9]+$', '') }}
+        k3s_upgrade_target_semver: >-
+          {{ k3s_version | regex_replace('^v', '') | regex_replace('\+k3s[0-9]+$', '') }}
+      run_once: true
+
+    - name: Assert the target version is not a downgrade
+      ansible.builtin.assert:
+        that: k3s_upgrade_target_semver is version(k3s_upgrade_current_semver, '>=') or k3s_upgrade_allow_downgrade
+        fail_msg: >-
+          Target k3s_version {{ k3s_version }} ({{ k3s_upgrade_target_semver }})
+          is older than the currently running
+          {{ k3s_upgrade_current_cluster_version.stdout }}
+          ({{ k3s_upgrade_current_semver }}). Set
+          -e k3s_upgrade_allow_downgrade=true to run backwards deliberately.
+      run_once: true
+
+    - name: Assert the target version does not skip more than one minor
+      ansible.builtin.assert:
+        that: >-
+          ((k3s_upgrade_target_semver.split('.')[1] | int) - (k3s_upgrade_current_semver.split('.')[1] | int))
+          <= (k3s_upgrade_max_minor_skew | int)
+        fail_msg: >-
+          Target {{ k3s_upgrade_target_semver }} is more than
+          {{ k3s_upgrade_max_minor_skew }} minor version(s) ahead of the
+          running {{ k3s_upgrade_current_semver }}. Kubernetes control-plane
+          upgrades must be staged one minor at a time — see upgrade-plan.md
+          for the staged hop sequence. Override with
+          -e k3s_upgrade_max_minor_skew=N if you are certain.
+      run_once: true
+
+    - name: Determine the mount points backing / and /var/lib/rancher
+      ansible.builtin.set_fact:
+        k3s_upgrade_root_mount: "{{ ansible_facts.mounts | selectattr('mount', 'equalto', '/') | list | first }}"
+        k3s_upgrade_rancher_mount: >-
+          {{
+            ansible_facts.mounts
+            | selectattr('mount', 'in', ['/var/lib/rancher', '/var/lib', '/var', '/'])
+            | sort(attribute='mount', reverse=True) | list | first
+          }}
+
+    - name: Assert at least 5GB free on / and /var/lib/rancher
+      ansible.builtin.assert:
+        that:
+          - k3s_upgrade_root_mount.size_available > 5 * 1024 * 1024 * 1024
+          - k3s_upgrade_rancher_mount.size_available > 5 * 1024 * 1024 * 1024
+        fail_msg: >-
+          {{ inventory_hostname }}: less than 5GB free on / or
+          /var/lib/rancher — not enough headroom for a new k3s binary and any
+          images pulled during the upgrade.
+
+    - name: Read the containerd config template from the repo
+      ansible.builtin.set_fact:
+        k3s_upgrade_containerd_tmpl_content: >-
+          {{ lookup('file', playbook_dir + '/roles/prereq/files/containerd-config.toml.tmpl') }}
+      run_once: true
+
+    - name: Compute where the base-config directive appears in the template
+      # Use splitlines(), not split('\n') — inside a ">-" folded scalar YAML
+      # does not process backslash escapes, so '\n' here would be the two
+      # literal characters "\" and "n", never matching a real newline, and
+      # the whole file would silently parse as a single "line" (this exact
+      # bug was caught live: it made this very check pass on a broken
+      # template on 2026-09-06). splitlines() takes no delimiter argument,
+      # so there is nothing for the folding to corrupt.
+      ansible.builtin.set_fact:
+        k3s_upgrade_containerd_code_lines: >-
+          {{
+            k3s_upgrade_containerd_tmpl_content.splitlines()
+            | map('trim') | reject('match', '^#')
+            | select('search', 'template "base"') | list
+          }}
+        k3s_upgrade_containerd_comment_hits: >-
+          {{
+            k3s_upgrade_containerd_tmpl_content.splitlines()
+            | map('trim') | select('match', '^#')
+            | select('search', 'template "base"') | list
+          }}
+      run_once: true
+
+    - name: Assert the base-config directive appears exactly once, and never inside a comment
+      ansible.builtin.assert:
+        that:
+          - k3s_upgrade_containerd_code_lines | length == 1
+          - k3s_upgrade_containerd_comment_hits | length == 0
+        fail_msg: >-
+          roles/prereq/files/containerd-config.toml.tmpl must contain the
+          base-config include directive exactly once, on a real (non-comment)
+          line. Found {{ k3s_upgrade_containerd_code_lines | length }} on code
+          lines and {{ k3s_upgrade_containerd_comment_hits | length }} inside
+          comments ({% raw %}{{ template "base" . }}{% endraw %} written in a
+          comment still gets executed by Go's text/template engine and
+          renders a duplicate, corrupting the output TOML — this exact bug
+          broke k3s-w1 on 2026-09-06). Without the real directive at all,
+          this file REPLACES k3s's entire generated containerd config
+          instead of extending it, and every node goes NotReady the next
+          time containerd restarts.
+      run_once: true
+
+    - name: Check Longhorn volume robustness (hard gate — not reconciled here)
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --context {{ kubectl_context }}
+          -n {{ longhorn_namespace }}
+          get volumes.longhorn.io
+          -o jsonpath={.items[*].status.robustness}
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+      check_mode: false
+      register: k3s_upgrade_longhorn_robustness
+      when: longhorn_check | bool
+
+    - name: Assert no Longhorn volume is faulted or unknown
+      ansible.builtin.assert:
+        that:
+          - "'faulted' not in k3s_upgrade_longhorn_robustness.stdout"
+          - "'unknown' not in k3s_upgrade_longhorn_robustness.stdout"
+        fail_msg: >-
+          At least one Longhorn volume reports faulted or unknown robustness
+          ({{ k3s_upgrade_longhorn_robustness.stdout }}). This is genuine
+          external cluster health, not something this playbook reconciles —
+          investigate Longhorn manually. Override with -e longhorn_check=false
+          only if you are deliberately proceeding around it.
+      run_once: true
+      when: longhorn_check | bool
+
+    - name: Read current kubeletVersion for every node (for the summary)
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --context {{ kubectl_context }}
+          get nodes -o jsonpath='{range .items[*]}{.metadata.name}={.status.nodeInfo.kubeletVersion}{"\n"}{end}'
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+      check_mode: false
+      register: k3s_upgrade_node_versions_raw
+
+    - name: Build a node-name -> current-version map
+      ansible.builtin.set_fact:
+        k3s_upgrade_node_versions: "{{ dict(k3s_upgrade_node_versions_raw.stdout_lines | map('split', '=')) }}"
+      run_once: true
+
+    - name: Print the upgrade plan summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ item }} ({{ hostvars[item]['ansible_facts']['hostname'] }}):
+          {{ k3s_upgrade_node_versions[hostvars[item]['ansible_facts']['hostname']] | default('unknown') }}
+          -> {{ k3s_version }}
+      loop: "{{ groups['k3s_cluster'] }}"
+      run_once: true
+
+    - name: Note that the agent group is intentionally empty on this cluster
+      ansible.builtin.debug:
+        msg: >-
+          groups['node'] is empty — Play 4 (agents) will report
+          "skipping: no hosts matched" for this run. That is expected on a
+          cluster where masters run all workloads (k3s_master_taint: false).
+      run_once: true
+      when: (groups['node'] | default([]) | length) == 0
+
+    - name: Note whether an etcd snapshot will be taken
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'An etcd snapshot WILL be taken before any node is touched.'
+             if (k3s_upgrade_etcd_snapshot | bool)
+             else 'k3s_upgrade_etcd_snapshot=false — NO etcd snapshot will be taken.' }}
+      run_once: true
+
+    - name: Compare the local kubectl context against the cluster's own view of itself
+      run_once: true
+      block:
+        - name: Get node names via the local kubectl context
+          ansible.builtin.command:
+            cmd: kubectl --context {{ kubectl_context }} get nodes -o name
+          delegate_to: localhost
+          become: false
+          changed_when: false
+          check_mode: false
+          register: k3s_upgrade_ctx_node_names
+
+        - name: Get node names via k3s kubectl on the first master
+          ansible.builtin.command:
+            cmd: "{{ k3s_kubectl_binary | default('k3s kubectl') }} get nodes -o name"
+          delegate_to: "{{ groups['master'][0] }}"
+          changed_when: false
+          check_mode: false
+          register: k3s_upgrade_incluster_node_names
+
+        - name: Assert the local kubectl context points at this same cluster
+          ansible.builtin.assert:
+            that: >-
+              (k3s_upgrade_ctx_node_names.stdout_lines | sort)
+              == (k3s_upgrade_incluster_node_names.stdout_lines | sort)
+            fail_msg: >-
+              kubectl context '{{ kubectl_context }}' sees a different node
+              set than k3s kubectl on {{ groups['master'][0] }} does. You are
+              pointed at the wrong cluster locally — fix ~/.kube/config
+              before proceeding.
+
+- name: Take a pre-upgrade etcd snapshot
+  hosts: master
+  gather_facts: false
+  run_once: true
+  become: true
+  tags: [snapshot]
+  vars: *upgrade_vars
+  environment: "{{ proxy_env | default({}) }}"
+  tasks:
+    - name: Snapshot etcd before any node is touched
+      when: k3s_upgrade_etcd_snapshot | bool
+      block:
+        - name: Freeze a timestamp for the snapshot name
+          ansible.builtin.set_fact:
+            k3s_upgrade_snapshot_ts: "{{ lookup('pipe', 'date -u +%Y%m%d%H%M%S') }}"
+
+        - name: Sanitise the target version for the snapshot filename
+          ansible.builtin.set_fact:
+            k3s_upgrade_snapshot_version: "{{ k3s_version | regex_replace('[^A-Za-z0-9.]', '-') }}"
+
+        - name: Take an etcd snapshot on the first master
+          ansible.builtin.command:
+            cmd: >-
+              k3s etcd-snapshot save
+              --name pre-upgrade-{{ k3s_upgrade_snapshot_version }}-{{ k3s_upgrade_snapshot_ts }}
+          delegate_to: "{{ groups['master'][0] }}"
+          changed_when: true
+
+        - name: Find the snapshot file just created
+          ansible.builtin.find:
+            paths: /var/lib/rancher/k3s/server/db/snapshots
+            patterns: "pre-upgrade-{{ k3s_upgrade_snapshot_version }}-{{ k3s_upgrade_snapshot_ts }}*"
+          delegate_to: "{{ groups['master'][0] }}"
+          register: k3s_upgrade_snapshot_files
+
+        - name: Assert the snapshot file exists and is non-empty
+          ansible.builtin.assert:
+            that:
+              - k3s_upgrade_snapshot_files.matched > 0
+              - k3s_upgrade_snapshot_files.files[0].size > 0
+            fail_msg: >-
+              No non-empty etcd snapshot matching
+              pre-upgrade-{{ k3s_upgrade_snapshot_version }}-{{ k3s_upgrade_snapshot_ts }}
+              was found on {{ groups['master'][0] }} — a snapshot task that
+              silently no-ops is worse than none. Investigate before
+              proceeding, or set -e k3s_upgrade_etcd_snapshot=false to
+              deliberately skip.
+
+        - name: Print the snapshot path and the break-glass restore command
+          ansible.builtin.debug:
+            msg: >-
+              Snapshot: {{ k3s_upgrade_snapshot_files.files[0].path }}.
+              This is break-glass only, not a one-click rollback — restoring
+              needs a full --cluster-reset
+              --cluster-reset-restore-path={{ k3s_upgrade_snapshot_files.files[0].path }}
+              on this node plus wiping the other masters' data directories
+              (see k3s_restore_from_backup.yaml). For a same-minor bump,
+              practical rollback is just re-running this playbook with the
+              previous k3s_version. Once a hop crosses into a k3s release
+              bundling etcd 3.6, binary rollback is no longer possible and
+              this snapshot becomes the only path.
+
+- name: Read the agent join token from the primary master
+  hosts: master
+  gather_facts: false
+  run_once: true
+  become: true
+  tags: [agents]
+  vars: *upgrade_vars
+  environment: "{{ proxy_env | default({}) }}"
+  tasks:
+    - name: Only needed when there are agent nodes to upgrade
+      when: (groups['node'] | default([]) | length) > 0
+      block:
+        - name: Read node-token from the primary master
+          ansible.builtin.slurp:
+            src: /var/lib/rancher/k3s/server/node-token
+          delegate_to: "{{ groups['master'][0] }}"
+          register: k3s_upgrade_node_token
+
+        - name: Store the join token on the primary master's hostvars
+          ansible.builtin.set_fact:
+            token: "{{ k3s_upgrade_node_token.content | b64decode | regex_replace('\n', '') }}"
+          delegate_to: "{{ groups['master'][0] }}"
+          delegate_facts: true
+
+- name: Rolling server upgrade
+  hosts: master
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  become: true
+  tags: [masters]
+  vars:
+    <<: *upgrade_vars
+    k3s_upgrade_peers: "{{ groups['master'] | difference([inventory_hostname]) }}"
+    k3s_upgrade_via: "{{ k3s_upgrade_peers | first }}"
+  environment: "{{ proxy_env | default({}) }}"
+  tasks:
+    # --- Part A: idempotent per-host reconciliation. Always runs, and is
+    # itself a no-op when nothing needs to change. Shared with the agent play
+    # below via tasks/reconcile-node.yml (safe because we're already inside a
+    # serial: 1 loop) — see the design note at the top of this file.
+    - name: Reconcile node baseline and render the k3s server unit
+      ansible.builtin.include_tasks: tasks/reconcile-node.yml
+      vars:
+        reconcile_node_service_template: roles/k3s_server/templates/k3s.service.j2
+        reconcile_node_service_dest: "{{ systemd_dir }}/k3s.service"
+        reconcile_node_service_mode: "0644"
+
+    - name: Read the running kubeletVersion for this node
+      ansible.builtin.command:
+        cmd: >-
+          {{ k3s_kubectl_binary | default('k3s kubectl') }}
+          get node {{ ansible_facts['hostname'] }}
+          -o jsonpath='{.status.nodeInfo.kubeletVersion}'
+      delegate_to: "{{ k3s_upgrade_via }}"
+      changed_when: false
+      check_mode: false
+      register: k3s_upgrade_current_version
+
+    - name: Compute whether this master actually needs a restart
+      ansible.builtin.set_fact:
+        k3s_upgrade_needs_restart: >-
+          {{
+            k3s_upgrade_current_version.stdout != k3s_version
+            or prereq_kubelet_config is changed
+            or prereq_containerd_config is changed
+            or k3s_upgrade_service_file is changed
+            or (k3s_upgrade_registries is defined and k3s_upgrade_registries is changed)
+          }}
+
+    # --- Part B: guarded restart sequence. Only runs when Part A detected
+    # something that actually requires k3s to restart. Order is load-bearing.
+    - name: Guarded restart sequence for this master
+      when: k3s_upgrade_needs_restart | bool
+      block:
+        - name: Wait for every peer master's local API to report ready before stopping this one
+          ansible.builtin.command:
+            cmd: "{{ k3s_kubectl_binary | default('k3s kubectl') }} get --raw=/readyz"
+          delegate_to: "{{ item }}"
+          loop: "{{ k3s_upgrade_peers }}"
+          loop_control:
+            label: "{{ item }}"
+          register: k3s_upgrade_peer_readyz
+          until: k3s_upgrade_peer_readyz.rc == 0
+          retries: "{{ k3s_upgrade_peer_readyz_retries }}"
+          delay: "{{ k3s_upgrade_peer_readyz_delay }}"
+          changed_when: false
+          check_mode: false
+
+        - name: Record whether this node was already cordoned before this run
+          ansible.builtin.command:
+            cmd: >-
+              {{ k3s_kubectl_binary | default('k3s kubectl') }}
+              get node {{ ansible_facts['hostname'] }}
+              -o jsonpath='{.spec.unschedulable}'
+          delegate_to: "{{ k3s_upgrade_via }}"
+          changed_when: false
+          check_mode: false
+          register: k3s_upgrade_precordon_state
+
+        - name: Swap the k3s binary (no-op if already at the target version)
+          ansible.builtin.include_role:
+            name: download
+
+        - name: Cordon and drain this node before restarting k3s
+          ansible.builtin.command:
+            cmd: >-
+              {{ k3s_kubectl_binary | default('k3s kubectl') }}
+              drain {{ ansible_facts['hostname'] }}
+              --ignore-daemonsets
+              --delete-emptydir-data
+              --timeout={{ k3s_upgrade_drain_timeout }}
+          delegate_to: "{{ k3s_upgrade_via }}"
+          changed_when: true
+          when: k3s_upgrade_drain | bool
+
+        - name: Restart k3s
+          ansible.builtin.systemd:
+            name: k3s
+            state: restarted
+            daemon_reload: true
+
+        - name: Wait for the k3s unit to report active
+          ansible.builtin.systemd:
+            name: k3s
+            state: started
+          register: k3s_upgrade_service_state
+          until: k3s_upgrade_service_state.status.ActiveState == "active"
+          retries: "{{ k3s_upgrade_service_retries }}"
+          delay: "{{ k3s_upgrade_service_delay }}"
+
+        - name: Validate the rendered containerd config actually has CNI wiring
+          ansible.builtin.command:
+            cmd: grep -c -E 'cni|config_path' /var/lib/rancher/k3s/agent/etc/containerd/config.toml
+          register: k3s_upgrade_containerd_check
+          changed_when: false
+          check_mode: false
+          failed_when: k3s_upgrade_containerd_check.stdout | trim | int == 0
+
+        - name: Wait for this node's local API to report ready
+          ansible.builtin.command:
+            cmd: "{{ k3s_kubectl_binary | default('k3s kubectl') }} get --raw=/readyz"
+          register: k3s_upgrade_local_readyz
+          until: k3s_upgrade_local_readyz.rc == 0
+          retries: "{{ k3s_upgrade_readyz_retries }}"
+          delay: "{{ k3s_upgrade_readyz_delay }}"
+          changed_when: false
+          check_mode: false
+
+        - name: Wait for the node to report Ready
+          ansible.builtin.command:
+            cmd: >-
+              kubectl --context {{ kubectl_context }}
+              wait --for=condition=Ready
+              node/{{ ansible_facts['hostname'] }}
+              --timeout={{ k3s_upgrade_node_ready_timeout }}
+          delegate_to: localhost
+          become: false
+          changed_when: false
+          check_mode: false
+
+        - name: Assert the node actually reports the target version
+          when: k3s_upgrade_current_version.stdout != k3s_version
+          block:
+            - name: Re-read the kubeletVersion after restart
+              ansible.builtin.command:
+                cmd: >-
+                  {{ k3s_kubectl_binary | default('k3s kubectl') }}
+                  get node {{ ansible_facts['hostname'] }}
+                  -o jsonpath='{.status.nodeInfo.kubeletVersion}'
+              delegate_to: "{{ k3s_upgrade_via }}"
+              register: k3s_upgrade_post_version
+              until: k3s_upgrade_post_version.stdout == k3s_version
+              retries: "{{ k3s_upgrade_version_retries }}"
+              delay: "{{ k3s_upgrade_version_delay }}"
+              changed_when: false
+              check_mode: false
+
+            - name: Fail loudly if the version never took
+              ansible.builtin.assert:
+                that: k3s_upgrade_post_version.stdout == k3s_version
+                fail_msg: >-
+                  {{ ansible_facts['hostname'] }} still reports
+                  {{ k3s_upgrade_post_version.stdout }} after restarting,
+                  expected {{ k3s_version }}. Leaving this node cordoned —
+                  never schedule workloads back onto a node that silently
+                  didn't upgrade.
+
+        - name: Check for image pull failures on this node
+          when: k3s_upgrade_check_image_pulls | bool
+          block:
+            - name: List pods on this node with a waiting reason
+              ansible.builtin.command:
+                cmd: >-
+                  {{ k3s_kubectl_binary | default('k3s kubectl') }}
+                  get pods --all-namespaces
+                  --field-selector spec.nodeName={{ ansible_facts['hostname'] }}
+                  -o jsonpath='{range .items[*]}{.status.containerStatuses[*].state.waiting.reason}{"\n"}{end}'
+              delegate_to: "{{ k3s_upgrade_via }}"
+              changed_when: false
+              check_mode: false
+              register: k3s_upgrade_pod_waiting_reasons
+
+            - name: Assert no pod is stuck in an image pull failure
+              ansible.builtin.assert:
+                that: "'ImagePull' not in k3s_upgrade_pod_waiting_reasons.stdout"
+                fail_msg: >-
+                  At least one pod on {{ ansible_facts['hostname'] }} is stuck
+                  with an ImagePull-related waiting reason after the restart:
+                  {{ k3s_upgrade_pod_waiting_reasons.stdout }}
+
+        - name: Uncordon the node if this run cordoned it
+          ansible.builtin.command:
+            cmd: "{{ k3s_kubectl_binary | default('k3s kubectl') }} uncordon {{ ansible_facts['hostname'] }}"
+          delegate_to: "{{ k3s_upgrade_via }}"
+          changed_when: true
+          when:
+            - k3s_upgrade_drain | bool
+            - k3s_upgrade_precordon_state.stdout | trim != 'true'
+
+        - name: Wait for Longhorn to settle (no degraded volumes)
+          ansible.builtin.command:
+            cmd: >-
+              kubectl --context {{ kubectl_context }}
+              -n {{ longhorn_namespace }}
+              get volumes.longhorn.io
+              -o jsonpath={.items[*].status.robustness}
+          delegate_to: localhost
+          become: false
+          register: k3s_upgrade_longhorn_settle
+          changed_when: false
+          check_mode: false
+          until: "'degraded' not in k3s_upgrade_longhorn_settle.stdout"
+          retries: 60
+          delay: 15
+          when: longhorn_check | bool
+
+        - name: Allow the cluster to settle before the next master
+          ansible.builtin.pause:
+            minutes: "{{ k3s_upgrade_settle_minutes }}"
+
+- name: Rolling agent upgrade
+  hosts: node
+  gather_facts: true
+  serial: "{{ k3s_upgrade_agent_serial }}"
+  any_errors_fatal: true
+  become: true
+  tags: [agents]
+  vars:
+    <<: *upgrade_vars
+    k3s_upgrade_via: "{{ groups['master'] | first }}"
+  environment: "{{ proxy_env | default({}) }}"
+  tasks:
+    # --- Part A: idempotent per-host reconciliation (always runs), shared
+    # with the master play above via tasks/reconcile-node.yml ---
+    - name: Reconcile node baseline and render the k3s agent unit
+      ansible.builtin.include_tasks: tasks/reconcile-node.yml
+      vars:
+        reconcile_node_service_template: roles/k3s_agent/templates/k3s.service.j2
+        reconcile_node_service_dest: "{{ systemd_dir }}/k3s-node.service"
+        reconcile_node_service_mode: "0755"
+
+    - name: Read the running kubeletVersion for this node
+      ansible.builtin.command:
+        cmd: >-
+          {{ k3s_kubectl_binary | default('k3s kubectl') }}
+          get node {{ ansible_facts['hostname'] }}
+          -o jsonpath='{.status.nodeInfo.kubeletVersion}'
+      delegate_to: "{{ k3s_upgrade_via }}"
+      changed_when: false
+      check_mode: false
+      register: k3s_upgrade_current_version
+
+    - name: Compute whether this agent actually needs a restart
+      ansible.builtin.set_fact:
+        k3s_upgrade_needs_restart: >-
+          {{
+            k3s_upgrade_current_version.stdout != k3s_version
+            or prereq_kubelet_config is changed
+            or prereq_containerd_config is changed
+            or k3s_upgrade_service_file is changed
+            or (k3s_upgrade_registries is defined and k3s_upgrade_registries is changed)
+          }}
+
+    # --- Part B: guarded restart sequence (only if something changed). No
+    # /readyz step (agents run no apiserver) and no peer-quorum gate (agents
+    # hold no quorum) — otherwise mirrors the masters play.
+    - name: Guarded restart sequence for this agent
+      when: k3s_upgrade_needs_restart | bool
+      block:
+        - name: Record whether this node was already cordoned before this run
+          ansible.builtin.command:
+            cmd: >-
+              {{ k3s_kubectl_binary | default('k3s kubectl') }}
+              get node {{ ansible_facts['hostname'] }}
+              -o jsonpath='{.spec.unschedulable}'
+          delegate_to: "{{ k3s_upgrade_via }}"
+          changed_when: false
+          check_mode: false
+          register: k3s_upgrade_precordon_state
+
+        - name: Swap the k3s binary (no-op if already at the target version)
+          ansible.builtin.include_role:
+            name: download
+
+        - name: Cordon and drain this node before restarting k3s-node
+          ansible.builtin.command:
+            cmd: >-
+              {{ k3s_kubectl_binary | default('k3s kubectl') }}
+              drain {{ ansible_facts['hostname'] }}
+              --ignore-daemonsets
+              --delete-emptydir-data
+              --timeout={{ k3s_upgrade_drain_timeout }}
+          delegate_to: "{{ k3s_upgrade_via }}"
+          changed_when: true
+          when: k3s_upgrade_drain | bool
+
+        - name: Restart k3s-node
+          ansible.builtin.systemd:
+            name: k3s-node
+            state: restarted
+            daemon_reload: true
+
+        - name: Wait for the k3s-node unit to report active
+          ansible.builtin.systemd:
+            name: k3s-node
+            state: started
+          register: k3s_upgrade_service_state
+          until: k3s_upgrade_service_state.status.ActiveState == "active"
+          retries: "{{ k3s_upgrade_service_retries }}"
+          delay: "{{ k3s_upgrade_service_delay }}"
+
+        - name: Validate the rendered containerd config actually has CNI wiring
+          ansible.builtin.command:
+            cmd: grep -c -E 'cni|config_path' /var/lib/rancher/k3s/agent/etc/containerd/config.toml
+          register: k3s_upgrade_containerd_check
+          changed_when: false
+          check_mode: false
+          failed_when: k3s_upgrade_containerd_check.stdout | trim | int == 0
+
+        - name: Wait for the node to report Ready
+          ansible.builtin.command:
+            cmd: >-
+              kubectl --context {{ kubectl_context }}
+              wait --for=condition=Ready
+              node/{{ ansible_facts['hostname'] }}
+              --timeout={{ k3s_upgrade_node_ready_timeout }}
+          delegate_to: localhost
+          become: false
+          changed_when: false
+          check_mode: false
+
+        - name: Assert the node actually reports the target version
+          when: k3s_upgrade_current_version.stdout != k3s_version
+          block:
+            - name: Re-read the kubeletVersion after restart
+              ansible.builtin.command:
+                cmd: >-
+                  {{ k3s_kubectl_binary | default('k3s kubectl') }}
+                  get node {{ ansible_facts['hostname'] }}
+                  -o jsonpath='{.status.nodeInfo.kubeletVersion}'
+              delegate_to: "{{ k3s_upgrade_via }}"
+              register: k3s_upgrade_post_version
+              until: k3s_upgrade_post_version.stdout == k3s_version
+              retries: "{{ k3s_upgrade_version_retries }}"
+              delay: "{{ k3s_upgrade_version_delay }}"
+              changed_when: false
+              check_mode: false
+
+            - name: Fail loudly if the version never took
+              ansible.builtin.assert:
+                that: k3s_upgrade_post_version.stdout == k3s_version
+                fail_msg: >-
+                  {{ ansible_facts['hostname'] }} still reports
+                  {{ k3s_upgrade_post_version.stdout }} after restarting,
+                  expected {{ k3s_version }}. Leaving this node cordoned —
+                  never schedule workloads back onto a node that silently
+                  didn't upgrade.
+
+        - name: Check for image pull failures on this node
+          when: k3s_upgrade_check_image_pulls | bool
+          block:
+            - name: List pods on this node with a waiting reason
+              ansible.builtin.command:
+                cmd: >-
+                  {{ k3s_kubectl_binary | default('k3s kubectl') }}
+                  get pods --all-namespaces
+                  --field-selector spec.nodeName={{ ansible_facts['hostname'] }}
+                  -o jsonpath='{range .items[*]}{.status.containerStatuses[*].state.waiting.reason}{"\n"}{end}'
+              delegate_to: "{{ k3s_upgrade_via }}"
+              changed_when: false
+              check_mode: false
+              register: k3s_upgrade_pod_waiting_reasons
+
+            - name: Assert no pod is stuck in an image pull failure
+              ansible.builtin.assert:
+                that: "'ImagePull' not in k3s_upgrade_pod_waiting_reasons.stdout"
+                fail_msg: >-
+                  At least one pod on {{ ansible_facts['hostname'] }} is stuck
+                  with an ImagePull-related waiting reason after the restart:
+                  {{ k3s_upgrade_pod_waiting_reasons.stdout }}
+
+        - name: Uncordon the node if this run cordoned it
+          ansible.builtin.command:
+            cmd: "{{ k3s_kubectl_binary | default('k3s kubectl') }} uncordon {{ ansible_facts['hostname'] }}"
+          delegate_to: "{{ k3s_upgrade_via }}"
+          changed_when: true
+          when:
+            - k3s_upgrade_drain | bool
+            - k3s_upgrade_precordon_state.stdout | trim != 'true'
+
+        - name: Wait for Longhorn to settle (no degraded volumes)
+          ansible.builtin.command:
+            cmd: >-
+              kubectl --context {{ kubectl_context }}
+              -n {{ longhorn_namespace }}
+              get volumes.longhorn.io
+              -o jsonpath={.items[*].status.robustness}
+          delegate_to: localhost
+          become: false
+          register: k3s_upgrade_longhorn_settle
+          changed_when: false
+          check_mode: false
+          until: "'degraded' not in k3s_upgrade_longhorn_settle.stdout"
+          retries: 60
+          delay: 15
+          when: longhorn_check | bool
+
+        - name: Allow the cluster to settle before the next agent
+          ansible.builtin.pause:
+            minutes: "{{ k3s_upgrade_settle_minutes }}"
+
+- name: Bump kube-vip and MetalLB addon manifests
+  hosts: master
+  gather_facts: true
+  become: true
+  tags: [addons]
+  vars: *upgrade_vars
+  environment: "{{ proxy_env | default({}) }}"
+  # Deliberately not serialised: k3s_server_post's metallb.yml uses run_once
+  # extensively, which fires once per serial batch, not once per play. Runs
+  # after the full k3s rolling upgrade (masters + agents) on purpose — see
+  # the header comment.
+  tasks:
+    - name: Deploy the kube-vip control-plane VIP manifest
+      ansible.builtin.include_role:
+        name: k3s_server
+        tasks_from: vip.yml
+      when: kube_vip_enabled | bool
+
+    - name: Deploy the MetalLB manifest (kube-vip does not own the LB IP range)
+      ansible.builtin.include_role:
+        name: k3s_server
+        tasks_from: metallb.yml
+      when: metal_lb_enabled and kube_vip_lb_ip_range is not defined and not (cilium_bgp | default(false) | bool) # noqa yaml[line-length]
+
+    - name: Deploy the kube-vip load-balancer manifest
+      ansible.builtin.include_role:
+        name: k3s_server
+        tasks_from: kube-vip.yml
+      when: kube_vip_enabled | bool and kube_vip_lb_ip_range is defined
+
+    - name: Reconcile MetalLB replicas, CRs, and readiness
+      ansible.builtin.include_role:
+        name: k3s_server_post
+
+    - name: Wait for the kube-vip DaemonSet rollout
+      ansible.builtin.command:
+        cmd: >-
+          {{ k3s_kubectl_binary | default('k3s kubectl') }}
+          -n kube-system rollout status ds/kube-vip-ds --timeout=300s
+      delegate_to: "{{ groups['master'][0] }}"
+      run_once: true
+      changed_when: false
+      check_mode: false
+      when: kube_vip_enabled | bool
+
+    - name: Read the kube-vip DaemonSet image
+      ansible.builtin.command:
+        cmd: >-
+          {{ k3s_kubectl_binary | default('k3s kubectl') }}
+          -n kube-system get ds kube-vip-ds
+          -o jsonpath='{.spec.template.spec.containers[0].image}'
+      delegate_to: "{{ groups['master'][0] }}"
+      run_once: true
+      changed_when: false
+      check_mode: false
+      register: k3s_upgrade_kubevip_image
+      when: kube_vip_enabled | bool
+
+    - name: Assert the kube-vip image matches the target tag
+      ansible.builtin.assert:
+        that: k3s_upgrade_kubevip_image.stdout is search(':' ~ kube_vip_tag_version ~ '$')
+        fail_msg: >-
+          kube-vip-ds image is {{ k3s_upgrade_kubevip_image.stdout }},
+          expected tag {{ kube_vip_tag_version }}.
+      run_once: true
+      when: kube_vip_enabled | bool
+
+    - name: Confirm the VIP is reachable through the freshly-rolled kube-vip
+      ansible.builtin.command:
+        cmd: kubectl --context {{ kubectl_context }} get --raw=/readyz
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+      check_mode: false
+      register: k3s_upgrade_vip_readyz
+      until: k3s_upgrade_vip_readyz.rc == 0
+      retries: 12
+      delay: 5
+      when: kube_vip_enabled | bool
+
+- name: Final verification
+  hosts: master
+  gather_facts: false
+  run_once: true
+  become: true
+  tags: [verify]
+  vars: *upgrade_vars
+  environment: "{{ proxy_env | default({}) }}"
+  tasks:
+    - name: Assert every node is currently Ready
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --context {{ kubectl_context }}
+          wait --for=condition=Ready nodes --all --timeout=10s
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      check_mode: false
+
+    - name: Get every node's kubeletVersion
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --context {{ kubectl_context }}
+          get nodes -o jsonpath='{range .items[*]}{.metadata.name}={.status.nodeInfo.kubeletVersion}{"\n"}{end}'
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      check_mode: false
+      register: k3s_upgrade_final_nodes
+
+    - name: Assert every node reports the target kubeletVersion
+      ansible.builtin.assert:
+        that: item.split('=')[1] == k3s_version
+        success_msg: "{{ item.split('=')[0] }}: {{ item.split('=')[1] }}"
+        fail_msg: "{{ item }} does not report the expected version {{ k3s_version }}"
+      loop: "{{ k3s_upgrade_final_nodes.stdout_lines }}"
+      loop_control:
+        label: "{{ item.split('=')[0] }}"
+
+    - name: Assert no kube-system pod is outside Running/Succeeded
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --context {{ kubectl_context }}
+          -n kube-system get pods
+          -o jsonpath='{range .items[*]}{.metadata.name}={.status.phase}{"\n"}{end}'
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      check_mode: false
+      register: k3s_upgrade_final_kube_system
+      until: >-
+        k3s_upgrade_final_kube_system.stdout_lines
+        | map('regex_search', '=(Running|Succeeded)$')
+        | select('none') | list | length == 0
+      retries: 12
+      delay: 10
+
+    - name: Read the kube-vip DaemonSet image for final verification
+      ansible.builtin.command:
+        cmd: >-
+          {{ k3s_kubectl_binary | default('k3s kubectl') }}
+          -n kube-system get ds kube-vip-ds
+          -o jsonpath='{.spec.template.spec.containers[0].image}'
+      delegate_to: "{{ groups['master'][0] }}"
+      changed_when: false
+      check_mode: false
+      register: k3s_upgrade_final_kubevip
+      when: kube_vip_enabled | bool
+
+    - name: Assert the kube-vip image matches the target tag
+      ansible.builtin.assert:
+        that: k3s_upgrade_final_kubevip.stdout is search(':' ~ kube_vip_tag_version ~ '$')
+        fail_msg: "kube-vip is {{ k3s_upgrade_final_kubevip.stdout }}, expected {{ kube_vip_tag_version }}"
+      when: kube_vip_enabled | bool
+
+    - name: Read the MetalLB speaker DaemonSet image for final verification
+      ansible.builtin.command:
+        cmd: >-
+          {{ k3s_kubectl_binary | default('k3s kubectl') }}
+          -n metallb-system get ds speaker
+          -o jsonpath='{.spec.template.spec.containers[0].image}'
+      delegate_to: "{{ groups['master'][0] }}"
+      changed_when: false
+      check_mode: false
+      register: k3s_upgrade_final_speaker
+      when: metal_lb_enabled | bool
+
+    - name: Assert the MetalLB speaker image matches the target tag
+      ansible.builtin.assert:
+        that: k3s_upgrade_final_speaker.stdout is search(':' ~ metal_lb_speaker_tag_version ~ '$')
+        fail_msg: >-
+          MetalLB speaker is {{ k3s_upgrade_final_speaker.stdout }},
+          expected {{ metal_lb_speaker_tag_version }}
+      when: metal_lb_enabled | bool
+
+    - name: Read the MetalLB controller Deployment image for final verification
+      ansible.builtin.command:
+        cmd: >-
+          {{ k3s_kubectl_binary | default('k3s kubectl') }}
+          -n metallb-system get deployment controller
+          -o jsonpath='{.spec.template.spec.containers[0].image}'
+      delegate_to: "{{ groups['master'][0] }}"
+      changed_when: false
+      check_mode: false
+      register: k3s_upgrade_final_controller
+      when: metal_lb_enabled | bool
+
+    - name: Assert the MetalLB controller image matches the target tag
+      ansible.builtin.assert:
+        that: k3s_upgrade_final_controller.stdout is search(':' ~ metal_lb_controller_tag_version ~ '$')
+        fail_msg: >-
+          MetalLB controller is {{ k3s_upgrade_final_controller.stdout }},
+          expected {{ metal_lb_controller_tag_version }}
+      when: metal_lb_enabled | bool
+
+    - name: Confirm the VIP is reachable
+      ansible.builtin.command:
+        cmd: kubectl --context {{ kubectl_context }} get --raw=/readyz
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      check_mode: false
+
+    # Report only — never acts on this. reboot.yml remains the only way
+    # reboots actually happen, because it drains properly; a converge run
+    # here must never reboot a node out from under running workloads.
+    - name: Check whether any node wants a reboot
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['k3s_cluster'] }}"
+      loop_control:
+        label: "{{ item }}"
+      register: k3s_upgrade_reboot_required
+      run_once: false
+      changed_when: false
+      check_mode: false
+
+    - name: Report nodes that want a reboot
+      ansible.builtin.debug:
+        msg: >-
+          {{
+            (k3s_upgrade_reboot_required.results | selectattr('stat.exists', 'true') | map(attribute='item') | list)
+            if (k3s_upgrade_reboot_required.results | selectattr('stat.exists', 'true') | list | length) > 0
+            else 'No node currently reports /var/run/reboot-required.'
+          }}
+
+    - name: Print final verification summary
+      ansible.builtin.debug:
+        msg: "{{ k3s_upgrade_final_nodes.stdout_lines }}"

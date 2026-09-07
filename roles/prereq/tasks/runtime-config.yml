@@ -1,0 +1,19 @@
+---
+# Files k3s reads at process start. Changing either requires a k3s restart to
+# take effect — deliberately split out of baseline.yml so a live-node caller
+# (upgrade-k3s.yml's tasks/reconcile-node.yml) can decide when/whether to
+# restart, instead of a handler firing an unguarded restart on a live node.
+
+- name: Add Custom kubelet config file
+  ansible.builtin.copy:
+    src: kubelet.config
+    dest: /data/k3s/kubelet.config
+    backup: true
+  register: prereq_kubelet_config
+
+- name: Add Custom containerd config template
+  ansible.builtin.copy:
+    src: containerd-config.toml.tmpl
+    dest: /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
+    backup: true
+  register: prereq_containerd_config

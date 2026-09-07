@@ -1,0 +1,66 @@
+---
+# Shared idempotent per-host reconciliation ("Part A"), included by both the
+# master and agent plays in upgrade-k3s.yml. A no-op when nothing needs to
+# change — this is what lets Part B's restart stay guarded on real state
+# transitions instead of firing unconditionally. Mirrors (a strict superset
+# of) the roles site.yml's "Prepare k3s nodes" play applies on a fresh node,
+# so a rebuilt node converges to the same baseline as a maintained one — kept
+# in sync by .github/scripts/test-baseline-parity.sh.
+#
+# Callers must set:
+#   reconcile_node_service_template - path (repo-root relative) to the
+#     k3s systemd unit Jinja2 template for this node's role (server vs agent)
+#   reconcile_node_service_dest     - destination unit file path
+#   reconcile_node_service_mode     - file mode for the rendered unit
+
+- name: Reconcile prereq baseline (live-node-safe, no k3s restart)
+  ansible.builtin.include_role:
+    name: prereq
+    tasks_from: baseline.yml
+
+- name: Reconcile Raspberry Pi tuning
+  ansible.builtin.include_role:
+    name: raspberrypi
+
+- name: Reconcile custom registries
+  ansible.builtin.include_role:
+    name: k3s_custom_registries
+  register: k3s_upgrade_registries
+  when: custom_registries | default(false) | bool
+
+- name: Reconcile the Longhorn multipath fix
+  ansible.builtin.include_role:
+    name: longhorn_node_fix
+
+- name: Reconcile node-level Longhorn disk setup
+  ansible.builtin.include_role:
+    name: node_longhorn
+
+- name: Reconcile node-level NFS mounts
+  ansible.builtin.include_role:
+    name: node_nfs
+
+# Neither mail_relay nor unattended_upgrades touches anything k3s reads, so
+# neither feeds k3s_upgrade_needs_restart below — deliberately.
+- name: Reconcile the mail relay
+  ansible.builtin.include_role:
+    name: mail_relay
+  when: mail_relay_enabled | default(true) | bool
+
+- name: Reconcile unattended-upgrades
+  ansible.builtin.include_role:
+    name: unattended_upgrades
+
+- name: Reconcile prereq runtime config (kubelet/containerd — requires a k3s restart to take effect)
+  ansible.builtin.include_role:
+    name: prereq
+    tasks_from: runtime-config.yml
+
+- name: Render k3s systemd unit file
+  ansible.builtin.template:
+    src: "{{ reconcile_node_service_template }}"
+    dest: "{{ reconcile_node_service_dest }}"
+    owner: root
+    group: root
+    mode: "{{ reconcile_node_service_mode }}"
+  register: k3s_upgrade_service_file

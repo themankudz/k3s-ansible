@@ -192,6 +192,11 @@ unattended_upgrades_mail: my_email@domain.com
 # Trigger for email - 'Unattended-Upgrade::MailReport', possible values are "always", "only-on-error" or "on-change"
 unattended_upgrades_mail_trigger: on-change
 
+# Enable the postfix mail relay (mail_relay role). This is applied as part of
+# the shared node baseline by both site.yml and upgrade-k3s.yml. Set to false
+# if you don't want a mail relay configured on your nodes.
+mail_relay_enabled: true
+
 
 # Only enable this if you have set up your own container registry to act as a mirror / pull-through cache
 # (harbor / nexus / docker's official registry / etc).

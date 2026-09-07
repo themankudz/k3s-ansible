@@ -1,8 +1,10 @@
 ---
-- name: setup emails and configure unattended upgrades
+- name: Setup mail relay and unattended upgrades
   hosts: k3s_cluster
   gather_facts: true
   roles:
-    - role: mail-setup
-      become: yes
-      
+    - role: mail_relay
+      become: true
+      when: mail_relay_enabled | default(true) | bool
+    - role: unattended_upgrades
+      become: true

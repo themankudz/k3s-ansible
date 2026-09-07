@@ -1,6 +1,16 @@
-# Extends k3s's auto-generated containerd config (k3s merges this file in
-# rather than replacing it — see https://docs.k3s.io/advanced#configuring-containerd).
-#
+# WARNING: k3s renders this file as a Go text/template to produce the live
+# containerd config.toml. Go's text/template engine parses and executes
+# every double-brace action in this file, INCLUDING inside "#" comment
+# lines, and it panics on an empty or malformed action (do not even write
+# an empty double-brace pair in prose here). The one real directive below
+# must appear exactly once, nowhere else in this file, not even quoted or
+# described in a comment. Without it, this file REPLACES the entire
+# k3s-generated base config (CRI runtime, CNI bin_dir/conf_dir, snapshotter,
+# sandbox image, and the registries.yaml-driven certs.d mirror wiring)
+# instead of extending it, and every node goes NotReady with
+# NetworkPluginNotReady. See https://docs.k3s.io/advanced#configuring-containerd.
+{{ template "base" . }}
+
 # containerd 2.1+ pulls images via the Transfer Service by default, so
 # max_concurrent_downloads must be set here rather than under the older
 # io.containerd.cri.v1.images plugin. Caps how many layers a single image

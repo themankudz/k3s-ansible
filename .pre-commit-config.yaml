@@ -62,6 +62,18 @@ repos:
         language: system
         pass_filenames: false
         files: ^roles/k3s_server/tasks/(main|join_master)\.yml$|^\.github/scripts/test-k3s-server-bootstrap\.sh$
+      - id: upgrade-playbook-test
+        name: Rolling upgrade playbook regression test
+        entry: .github/scripts/test-upgrade-playbook.sh
+        language: system
+        pass_filenames: false
+        files: ^upgrade-k3s\.yml$|^tasks/reconcile-node\.yml$|^roles/prereq/files/containerd-config\.toml\.tmpl$|^\.github/scripts/test-upgrade-playbook\.sh$ # noqa yaml[line-length]
+      - id: baseline-parity-test
+        name: site.yml / upgrade-k3s.yml baseline parity test
+        entry: .github/scripts/test-baseline-parity.sh
+        language: system
+        pass_filenames: false
+        files: ^site\.yml$|^tasks/reconcile-node\.yml$|^\.github/scripts/test-baseline-parity\.sh$ # noqa yaml[line-length]
       - id: unique-hostname-precheck-test
         name: Unique hostname precheck test
         entry: .github/scripts/test-unique-hostname-precheck.sh
@@ -73,7 +85,7 @@ repos:
         entry: .github/scripts/test-disable-swap.sh
         language: system
         pass_filenames: false
-        files: ^roles/prereq/(tasks/main|defaults/main)\.yml$|^\.github/scripts/test-disable-swap\.sh$
+        files: ^roles/prereq/(tasks/(main|baseline)|defaults/main)\.yml$|^\.github/scripts/test-disable-swap\.sh$ # noqa yaml[line-length]
       - id: cilium-bgp-manifest-test
         name: Cilium BGP manifest test
         entry: python3 .github/scripts/test-cilium-bgp-manifest.py

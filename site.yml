@@ -19,7 +19,7 @@
         cluster_hostnames: >-
           {{
             groups['k3s_cluster']
-            | map('extract', hostvars, 'ansible_hostname')
+            | map('extract', hostvars, ['ansible_facts', 'hostname'])
             | list
           }}
       run_once: true
@@ -59,6 +59,11 @@
     - role: node_nfs
       become: true
       tags: node_nfs
+    - role: mail_relay
+      become: true
+      when: mail_relay_enabled | default(true) | bool
+    - role: unattended_upgrades
+      become: true
 
 - name: Setup k3s servers
   hosts: master
@@ -85,9 +90,9 @@
   hosts: master
   environment: "{{ proxy_env | default({}) }}"
   tasks:
-    - name: Copying kubeconfig from {{ hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_hostname'] }}
+    - name: Copying kubeconfig from {{ hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] }} # noqa yaml[line-length]
       ansible.builtin.fetch:
-        src: "{{ ansible_user_dir }}/.kube/config"
+        src: "{{ ansible_facts['user_dir'] }}/.kube/config"
         dest: ./kubeconfig
         flat: true
-      when: ansible_hostname == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_hostname']
+      when: ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]

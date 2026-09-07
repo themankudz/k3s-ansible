@@ -156,6 +156,22 @@ K3s, Calico, and Cilium each require staged upgrades for long-lived clusters.
   chart-only tag such as `metallb-chart-0.16.1` is not an application or image
   release and must not be used as the controller or speaker image tag.
 
+<!-- fork-only: start (this block is specific to this fork's clusters; keep
+     it out of the way of upstream merges rather than interleaving it above) -->
+> **This fork:** the manual operational steps above are automated by
+> `upgrade-k3s.yml`, a fork-local playbook (not part of upstream) and now the
+> **primary day-to-day maintenance playbook** for an already-established
+> cluster — every run converges the full node baseline (prereq, raspberrypi,
+> custom registries, Longhorn/NFS, mail relay, unattended-upgrades) alongside
+> the guarded, health-gated k3s/kube-vip/MetalLB rolling upgrade, one node at
+> a time. See `CLAUDE.md`'s "Fleet maintenance" section and `upgrade-plan.md`
+> for this fork's staged version-hop plan. `site.yml` in this fork remains
+> fresh-bootstrap-only, same as upstream — never run it against a live
+> cluster; its "Prepare k3s nodes" play applies the same role set (checked
+> against `upgrade-k3s.yml` by `.github/scripts/test-baseline-parity.sh`) so a
+> freshly bootstrapped node matches a routinely maintained one.
+<!-- fork-only: end -->
+
 ## ⚙️ Kube Config
 
 To copy your `kube config` locally so that you can access your **Kubernetes** cluster run:
@@ -265,6 +281,19 @@ See the commands [here](https://technotim.com/posts/k3s-etcd-ansible/#testing-yo
 | `reboot` (playbook) | `wait_seconds_after_reboot` | int | `0` | Not required | Pause in seconds between staggered reboot batches |
 | `prereq` | `system_timezone` | string | `null` | Not required | Timezone to be set on all nodes |
 | `prereq` | `disable_swap` | bool | `true` | Not required | Disable swap on all cluster nodes (swapoff + comment out /etc/fstab swap entries), all-or-nothing |
+| `mail_relay` | `mail_relay_enabled` | bool | `true` | Not required | Whether `site.yml`/`upgrade-k3s.yml` configure the postfix mail relay (`mail_relay` role) as part of the shared node baseline |
+| `mail_relay` | `mail_hostname` | string | `example.com` | Not required | Domain emails are sent from; used to build the postfix mailname |
+| `mail_relay` | `smtp_sasl_auth_enable` | string | `"yes"` | Not required | Enable SASL authentication to the relay |
+| `mail_relay` | `smtp_relayhost` | string | ❌ | Required | Smarthost relay `host:port` (e.g. an Amazon SES endpoint) |
+| `mail_relay` | `smtp_servers` | list | `[]` | Not required | `{host, key}` entries written to `sasl_passwd`; `key` is `user:password`, pull the secret half from a vaulted variable |
+| `mail_relay` | `mail_relay_send_test` | bool | `false` | Not required | Send a one-off test email when true |
+| `mail_relay` | `mail_relay_test_recipient` | string | `""` | Not required | Recipient for the opt-in test email |
+| `unattended_upgrades` | `uu_automatic_reboot` | bool | `false` | Not required | Automatically reboot after an upgrade that requires one |
+| `unattended_upgrades` | `uu_automatic_reboot_time` | string | `"02:00"` | Not required | Time of day for the automatic reboot, when enabled |
+| `unattended_upgrades` | `uu_remove_unused_kernel_packages` | bool | `true` | Not required | Remove unused kernel packages after upgrades |
+| `unattended_upgrades` | `uu_remove_unused_dependencies` | bool | `true` | Not required | Remove unused dependencies after upgrades |
+| `unattended_upgrades` | `unattended_upgrades_mail` | string | `""` | Not required | Notification email; `Mail`/`MailReport` directives are only written when non-empty |
+| `unattended_upgrades` | `unattended_upgrades_mail_trigger` | string | `on-change` | Not required | `Unattended-Upgrade::MailReport` trigger — `always`, `only-on-error`, or `on-change` |
 | `proxmox_lxc`, `reset_proxmox_lxc` | `proxmox_lxc_ct_ids` | list | ❌ | Required | Proxmox container ID list |
 | `raspberrypi` | `state` | string | `present` | Not required | Indicates whether the k3s prerequisites for Raspberry Pi should be set up (possible values are `present` and `absent`) |
 

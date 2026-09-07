@@ -15,7 +15,7 @@ This repository is solely for **cluster infrastructure** — provisioning nodes,
 Ansible-based automation for deploying a k3s Kubernetes homelab cluster with kube-vip and MetalLB. Mixed architecture: Raspberry Pi, Unraid, and x86 nodes.
 
 **Current Configuration**:
-- **k3s version**: v1.33.6+k3s1
+- **k3s version**: v1.33.10+k3s1
 - **API Endpoint (VIP)**: 192.168.50.200
 - **MetalLB IP Range**: 192.168.50.202-192.168.50.227 (homelab-cluster); 192.168.50.228-192.168.50.254 (workload-cluster)
 - **CNI**: Flannel (eth0 interface)
@@ -27,11 +27,14 @@ Ansible-based automation for deploying a k3s Kubernetes homelab cluster with kub
 ## Key Commands
 
 ```bash
-# Deploy the cluster
+# Deploy a fresh cluster (bootstrap-only — never run against a live cluster)
 ansible-playbook site.yml -i inventory/homelab-cluster/hosts.ini
 
-# Run prerequisites only (packages, kernel modules, kubelet config, udev rules)
-ansible-playbook pre-reqs.yml -i inventory/homelab-cluster/hosts.ini
+# Day-to-day fleet maintenance: converges the full node baseline (prereq,
+# raspberrypi, registries, longhorn/nfs, mail relay, unattended-upgrades) AND
+# safely rolls k3s/kube-vip/MetalLB version bumps, one node at a time. This is
+# the playbook to run routinely against an already-established cluster.
+ansible-playbook upgrade-k3s.yml -i inventory/homelab-cluster/hosts.ini
 
 # Apply Longhorn node fixes only (udev bcache rule)
 ansible-playbook longhorn-node-fix.yml -i inventory/homelab-cluster/hosts.ini
@@ -50,18 +53,21 @@ ansible-playbook reboot.yml -i inventory/homelab-cluster/hosts.ini
 
 # Restore from backup
 ansible-playbook k3s_restore_from_backup.yaml -i inventory/homelab-cluster/hosts.ini
-
-# Set up postfix/unattended-upgrade email notifications
-ansible-playbook setup-mail.yml -i inventory/homelab-cluster/hosts.ini
 ```
+
+`setup-mail.yml`, `prereq.yaml`, `pre-reqs.yml`, and `storage.yml` are older
+one-off playbooks that each cover a slice of what `upgrade-k3s.yml` now
+converges on every routine run. They still work (useful for a narrowly
+targeted one-off, e.g. `--limit` to a single node) but are redundant for
+day-to-day use — reach for `upgrade-k3s.yml` first.
 
 After `site.yml` completes, `./kubeconfig` is written to the repo root (gitignored) containing the cluster kubeconfig with the VIP endpoint.
 
-**Note**: `ansible.cfg` points to `inventory/homeserver-cluster/hosts.ini` which doesn't exist. Always pass `-i inventory/homelab-cluster/hosts.ini` explicitly.
+**Note**: `ansible.cfg` is gitignored (copy `ansible.example.cfg` and adjust locally). Its `inventory` default, if set, only covers one cluster — always pass `-i inventory/homelab-cluster/hosts.ini` or `-i inventory/workload-cluster/hosts.ini` explicitly rather than relying on it, especially for `upgrade-k3s.yml` where running against the wrong cluster is exactly the mistake Play 1's context sanity check exists to catch.
 
 ### Generic Infra Playbook (standalone VMs)
 
-`infra.yml` prepares any Debian/Ubuntu VM (not necessarily a k3s node) with base OS config, unattended-upgrades, a postfix→SES mail relay, and an OpenTelemetry collector forwarding **host metrics + host logs** to the self-hosted SigNoz (`signoz-ingress.homecluster.co:443`, gRPC OTLP, TLS). It is fully separate from the live k3s path (`site.yml`/`prereq`/`mail-setup` are untouched).
+`infra.yml` prepares any Debian/Ubuntu VM (not necessarily a k3s node) with base OS config, unattended-upgrades, a postfix→SES mail relay, and an OpenTelemetry collector forwarding **host metrics + host logs** to the self-hosted SigNoz (`signoz-ingress.homecluster.co:443`, gRPC OTLP, TLS). It is fully separate from the live k3s path (`site.yml`/`prereq`/`upgrade-k3s.yml` are untouched).
 
 ```bash
 # Run the full infra baseline (vault password required for secrets)
@@ -96,19 +102,55 @@ yamllint .
 
 ansible-lint runs with `profile: production`. The only suppressed rule is `var-naming[no-role-prefix]`.
 
-### Upgrading k3s
+### Fleet maintenance (`upgrade-k3s.yml`)
 
-To upgrade to a new k3s version (or bump kube-vip/MetalLB), update the version variables in `inventory/homelab-cluster/group_vars/all.yml`, then do a rolling upgrade:
+`upgrade-k3s.yml` is the primary day-to-day playbook for an
+already-established cluster — not just a k3s version bump. Every run
+reconciles the full node baseline via `tasks/reconcile-node.yml` (shared by
+both the master and agent plays): `prereq`, `raspberrypi`,
+`k3s_custom_registries`, `longhorn_node_fix`, `node_longhorn`, `node_nfs`,
+`mail_relay`, and `unattended_upgrades`. It is fully idempotent — an
+already-converged node reports no changes — and only restarts k3s when
+something that actually requires it changed (kubelet/containerd config, the
+systemd unit, custom registries, or the k3s version itself); `mail_relay` and
+`unattended_upgrades` never trigger a restart. `site.yml`'s "Prepare k3s
+nodes" play applies the same role set (see `.github/scripts/test-baseline-parity.sh`,
+which fails CI if the two drift), so a freshly bootstrapped node ends up at
+the same baseline as a routinely maintained one.
+
+**NEVER run `site.yml` against an already-established cluster.** `site.yml`'s
+`k3s_server` role is fresh-bootstrap-only: it unconditionally stops
+`k3s.service` on every master in one step (`site.yml` sets no `serial:` at
+all) and then brings up only the first master alone via a transient
+`--cluster-init` unit, waiting for its own `/readyz`. Against a live cluster
+this deadlocks — a lone etcd member of an already-established N-member
+cluster can never reach quorum by itself — and leaves every master's real
+service stopped. This caused a full cluster outage on 2026-09-05. `--serial`
+is also not a real `ansible-playbook` CLI flag in the first place; `serial:`
+is a play-level YAML keyword, so the old commands below would either error or
+silently run with no serialization at all.
+
+To upgrade an existing cluster (k3s version, and/or kube-vip/MetalLB), update
+the version variables in `inventory/<cluster>/group_vars/all.yml`, then run
+the dedicated rolling-upgrade playbook — `upgrade-k3s.yml` — which stops,
+swaps, and restarts one node at a time, gated on real cluster health at every
+step:
 
 ```bash
-# Masters one at a time (preserves etcd quorum)
-ansible-playbook site.yml -i inventory/homelab-cluster/hosts.ini --limit master --serial 1
+ansible-playbook upgrade-k3s.yml -i inventory/homelab-cluster/hosts.ini
 
-# Workers in small batches
-ansible-playbook site.yml -i inventory/homelab-cluster/hosts.ini --limit node --serial 2
+# Addon-only bump (kube-vip/MetalLB), skipping the k3s version gate:
+ansible-playbook upgrade-k3s.yml -i inventory/homelab-cluster/hosts.ini --tags addons
+
+# workload-cluster currently needs drain disabled — see the playbook header
+# for why (CPU headroom / PodDisruptionBudgets) before that's fixed:
+ansible-playbook upgrade-k3s.yml -i inventory/workload-cluster/hosts.ini -e k3s_upgrade_drain=false
 ```
 
-Pre-upgrade: snapshot etcd from a master node — `sudo k3s etcd-snapshot save --name pre-upgrade-$(date +%Y%m%d)`. See `upgrade-plan.md` for the full checklist.
+The etcd snapshot is automated by this playbook (`k3s_upgrade_etcd_snapshot:
+true` by default) — no separate manual `k3s etcd-snapshot save` step needed.
+See `upgrade-plan.md` for the staged version-hop plan and the full incident
+writeup this playbook was built to prevent recurring.
 
 ---
 
@@ -138,11 +180,11 @@ Pre-upgrade: snapshot etcd from a master node — `sudo k3s etcd-snapshot save -
 
 | Role | Purpose |
 |------|---------|
-| **prereq** | System prerequisites: timezone (Europe/London), packages (open-iscsi, nfs-common), multipath config, kubelet config, apt proxy (192.168.50.220:3142) |
+| **prereq** | System prerequisites: timezone (Europe/London), packages (open-iscsi, nfs-common), multipath config, kubelet config, apt proxy (192.168.50.220:3142). Split into `tasks/baseline.yml` (live-node-safe, no k3s restart) and `tasks/runtime-config.yml` (kubelet/containerd config — requires a restart, left to the caller); `tasks/main.yml` runs both in order for the bootstrap (`site.yml`) path. |
 | **download** | Download and install k3s binary |
 | **raspberrypi** | Pi-specific boot config (cgroups, cmdline.txt) — Pi nodes only |
 | **k3s_custom_registries** | Configure Harbor registry mirrors with insecure TLS |
-| **k3s_server** | Deploy k3s control plane with kube-vip v1.0.2 and MetalLB v0.15.3 |
+| **k3s_server** | Deploy k3s control plane with kube-vip v1.2.3 and MetalLB v0.16.0 |
 | **k3s_agent** | Join worker nodes to cluster |
 | **k3s_server_post** | Configure MetalLB Layer2 mode |
 | **node_longhorn** | Format and mount a dedicated Longhorn disk (`node_longhorn_disk`). Default is empty (skip). Configure per-node or per-group in host/group vars. |
@@ -150,13 +192,17 @@ Pre-upgrade: snapshot etcd from a master node — `sudo k3s etcd-snapshot save -
 | **longhorn_node_fix** | OS-level fixes for stable Longhorn operation (see below) |
 | **reset** | Complete cluster teardown |
 
-### Generic infra roles (used by `infra.yml`, not `site.yml`)
+### Shared / generic infra roles
+
+`unattended_upgrades` and `mail_relay` are used by **both** `infra.yml` (non-k3s VMs) and the k3s
+path (`site.yml`'s "Prepare k3s nodes" play, and every `upgrade-k3s.yml` run via
+`tasks/reconcile-node.yml`). `base_system` remains `infra.yml`-only — k3s nodes use `prereq` instead.
 
 | Role | Purpose |
 |------|---------|
-| **base_system** | Generic Debian/Ubuntu OS baseline: timezone, apt-proxy, optional `base_packages`, optional `base_ip_forward` sysctl (off by default). The non-k3s extraction of `prereq`. |
+| **base_system** | Generic Debian/Ubuntu OS baseline: timezone, apt-proxy, optional `base_packages`, optional `base_ip_forward` sysctl (off by default). The non-k3s extraction of `prereq`. `infra.yml`-only. |
 | **unattended_upgrades** | Installs and fully owns unattended-upgrades: `20auto-upgrades`, `50unattended-upgrades` (allowed origins, remove-unused, optional auto-reboot, and the `Mail`/`MailReport` directives gated on `unattended_upgrades_mail`), plus the `InhibitDelayMaxSec=90` logind tweak. |
-| **mail_relay** | Postfix send-only relay to an SMTP smarthost (Amazon SES). Refactor of `mail-setup`: postmap runs via handler, test email is opt-in (`mail_relay_send_test`), and it no longer touches `50unattended-upgrades`. |
+| **mail_relay** | Postfix send-only relay to an SMTP smarthost (Amazon SES). Refactor of the retired `mail-setup` role: postmap runs via handler, test email is opt-in (`mail_relay_send_test`), and it no longer touches `50unattended-upgrades`. Gated on `mail_relay_enabled` (default `true`) wherever it's included. |
 | **node_monitoring** | Installs `otelcol-contrib` (arch-mapped GitHub `.deb`, pinned by `otelcol_version`) and configures it to forward host metrics (`hostmetrics`) + host logs (`journald`) to SigNoz (`signoz_otlp_endpoint`, TLS). Runs as the `otelcol-contrib` user in the `systemd-journal`/`adm` groups. |
 
 ### longhorn_node_fix role

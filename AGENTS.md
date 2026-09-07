@@ -10,7 +10,15 @@ multiple networking choices, including Flannel, Calico, Cilium, kube-vip, and Me
 
 The main entry points are:
 
-- `site.yml`: provision or update a cluster.
+- `site.yml`: provision a **fresh** cluster. Fresh-bootstrap-only — never run
+  it against an already-established cluster (see `upgrade-k3s.yml` below).
+- `upgrade-k3s.yml`: the primary day-to-day fleet-maintenance playbook for an
+  already-established multi-master cluster. Converges the full node baseline
+  (via `tasks/reconcile-node.yml`, shared by its master and agent plays) and
+  safely rolls k3s/kube-vip/MetalLB version bumps, one node at a time.
+  `site.yml`'s "Prepare k3s nodes" play applies the same role set so a fresh
+  node matches a maintained one — kept in sync by
+  `.github/scripts/test-baseline-parity.sh`.
 - `reset.yml`: remove k3s from a cluster.
 - `reboot.yml`: reboot cluster nodes.
 - `inventory/sample/`: example inventory and variables.
