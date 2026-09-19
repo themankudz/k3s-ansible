@@ -13,7 +13,9 @@
 #    no config knob for this (the transfer service hard-codes 24h, CRI pull
 #    leases have no expiry at all). Removing a lease triggers containerd's GC.
 # 2. Always: delete orphaned file_storage compaction temp files (tempdb*) that
-#    a mid-compaction eviction leaves behind in the otel queue dirs.
+#    a mid-compaction kill leaves behind in the otel queue dirs. Since the
+#    agent queue moved to an emptyDir (2026-09-19) PURGE_DIRS is a glob under
+#    /var/lib/kubelet/pods -- expanded unquoted on purpose.
 # 3. Only when the root fs is at/over DISK_PRESSURE_PCT: purge the disposable
 #    dirs in PURGE_DIRS (restarting the otel-agent container so it releases its
 #    open queue file) and vacuum the journal. The threshold sits just below
@@ -32,7 +34,7 @@ set -Eeuo pipefail
 
 LEASE_MAX_AGE_H="${LEASE_MAX_AGE_H:-2}"
 DISK_PRESSURE_PCT="${DISK_PRESSURE_PCT:-88}"
-PURGE_DIRS="${PURGE_DIRS:-/var/lib/otel-agent-queue}"
+PURGE_DIRS="${PURGE_DIRS:-/var/lib/kubelet/pods/*/volumes/kubernetes.io~empty-dir/otel-agent-queue}"  # unquoted expansion below: globs work
 JOURNAL_VACUUM_SIZE="${JOURNAL_VACUUM_SIZE:-300M}"
 TEMPDB_MAX_AGE_MIN="${TEMPDB_MAX_AGE_MIN:-60}"
 

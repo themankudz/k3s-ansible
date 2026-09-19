@@ -81,6 +81,14 @@
     state: started
   when: ansible_facts['os_family'] == "Debian"
 
+# --- retired otel-agent hostPath queue: the k8s-infra agent buffers to an
+# emptyDir since 2026-09-19 (homelab-k3s signoz/values-k8s-infra*.yaml), so
+# nothing writes here any more; remove the leftover files.
+- name: Remove the retired otel-agent hostPath queue directory
+  ansible.builtin.file:
+    path: /var/lib/otel-agent-queue
+    state: absent
+
 # --- k3s-node-guard (opt-in): hourly stale-lease cleanup + purge of
 # disposable data under disk pressure. See files/k3s-node-guard.sh.
 - name: Install k3s-node-guard script

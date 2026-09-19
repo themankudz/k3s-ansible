@@ -26,7 +26,11 @@ inotify_max_user_watches: 1048576
 node_guard_enabled: false
 node_guard_lease_max_age_hours: 2
 node_guard_disk_pressure_pct: 88
+# Globs allowed (expanded by the script). The k8s-infra otel-agent's queue is
+# an emptyDir since 2026-09-19 (20Gi sizeLimit, 4GiB byte cap per signal), so this is a
+# last resort behind kubelet's own accounting -- but under real node disk
+# pressure the buffer is still the right thing to sacrifice.
 node_guard_purge_dirs:
-  - /var/lib/otel-agent-queue
+  - "/var/lib/kubelet/pods/*/volumes/kubernetes.io~empty-dir/otel-agent-queue"
 node_guard_journal_vacuum_size: 300M
 node_guard_tempdb_max_age_min: 60

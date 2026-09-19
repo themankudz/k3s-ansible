@@ -109,7 +109,7 @@ found holding 180G of dead blocks): `fstrim -v /var/lib/longhorn; fstrim -v /`.
 ```bash
 df -h /                                                 # the truth
 du -xsh /var/lib/rancher/k3s/agent/containerd /var/lib/rancher/k3s/server \
-        /var/log /var/lib/otel-agent-queue /var/lib/longhorn 2>/dev/null | sort -rh
+        /var/log /var/lib/kubelet/pods/*/volumes/kubernetes.io~empty-dir/otel-agent-queue /var/lib/longhorn 2>/dev/null | sort -rh
 ```
 
 **Always `du -x`.** Plain `du` crosses mounts and double-counts: `/run/k3s`
@@ -123,8 +123,8 @@ What each thing is and whether it's disposable:
 | `.../containerd/io.containerd.content.v1.content` | compressed image blobs | leftovers via lease cleanup (§4); unused images by kubelet GC at 85% |
 | `.../containerd/io.containerd.snapshotter.v1.overlayfs` | unpacked layers (~2.5–3× the blobs) | same |
 | `/var/lib/rancher/k3s/server/db` | etcd | **no** |
-| `/var/lib/otel-agent-queue` | otel-agent replay buffer (hostPath) | yes — `rm` contents, then restart the agent pod so it drops the open fd |
-| `/var/lib/otel-agent-queue/tempdb*` older than 1h | orphaned compaction copies | yes, always |
+| `/var/lib/kubelet/pods/<uid>/volumes/kubernetes.io~empty-dir/otel-agent-queue` | otel-agent replay buffer (emptyDir, 20Gi sizeLimit, 4GiB byte cap per signal — was an unbounded hostPath at `/var/lib/otel-agent-queue` before 2026-09-19) | last resort — kubelet already caps it; `rm` contents then restart the agent *container* (`crictl stop`) so it drops the open fd |
+| `…/otel-agent-queue/tempdb*` older than 1h | orphaned compaction copies (only from `on_start` compaction, now disabled) | yes, always |
 | `/var/log/journal` | journald (capped 500M by `prereq`) | `journalctl --vacuum-size=…` |
 | `/var/log/syslog*` | rsyslog (disabled by `prereq`) | yes |
 
