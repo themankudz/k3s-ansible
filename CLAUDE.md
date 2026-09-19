@@ -15,7 +15,7 @@ This repository is solely for **cluster infrastructure** — provisioning nodes,
 Ansible-based automation for deploying a k3s Kubernetes homelab cluster with kube-vip and MetalLB. Mixed architecture: Raspberry Pi, Unraid, and x86 nodes.
 
 **Current Configuration**:
-- **k3s version**: v1.33.10+k3s1
+- **k3s version**: v1.36.4+k3s1
 - **API Endpoint (VIP)**: 192.168.50.200
 - **MetalLB IP Range**: 192.168.50.202-192.168.50.227 (homelab-cluster); 192.168.50.228-192.168.50.254 (workload-cluster)
 - **CNI**: Flannel (eth0 interface)
