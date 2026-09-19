@@ -14,6 +14,15 @@ journald_system_max_file_size: 100M
 # Kernel defaults are 128 / 8192 -- exhausted on a busy k3s node.
 inotify_max_user_instances: 1024
 inotify_max_user_watches: 1048576
+# console_loglevel: keep err-level kernel messages off the VM's emulated
+# console. 3 prints emerg/alert/crit only, so panics and oopses still reach it;
+# nothing is lost from the ring buffer, journald or SigNoz either way.
+# NOTE: this is hygiene only. It does NOT stop k3s-w1's QXL video model spamming
+# "failed to allocate VRAM BO" -- tested 2026-09-19, the bursts continued every
+# 15-16s with console_loglevel=3, so the trigger is periodic framebuffer access
+# (fbcon/agetty on tty1), not the printing of the messages themselves. The fix
+# for that is changing the VM's <video model type='qxl'> to virtio in Unraid.
+console_loglevel: 3
 
 # k3s-node-guard: hourly timer that removes containerd leases older than
 # node_guard_lease_max_age_hours (leftovers of interrupted pulls -- containerd

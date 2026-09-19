@@ -71,6 +71,19 @@
     label: "{{ item.name }}={{ item.value }}"
   tags: sysctl
 
+# --- console loglevel: see console_loglevel in defaults/main.yml. Only the
+# first field of kernel.printk is ours to set; the remaining three are the
+# kernel defaults (default_message_loglevel, minimum_console_loglevel,
+# default_console_loglevel) and are kept as-is.
+- name: Keep err-level kernel messages off the emulated console
+  ansible.posix.sysctl:
+    name: kernel.printk
+    value: "{{ console_loglevel }}\t4\t1\t7"
+    sysctl_file: /etc/sysctl.d/90-k3s-console-loglevel.conf
+    state: present
+    reload: true
+  tags: sysctl
+
 # --- fstrim: Ubuntu enables fstrim.timer by default; make sure it stays so.
 # With discard=unmap on the VM disks this is what hands freed guest blocks
 # back to the host (a 200G Longhorn disk was found holding 180G of dead data).
