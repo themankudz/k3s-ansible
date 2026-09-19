@@ -427,16 +427,24 @@
     - name: Only needed when there are agent nodes to upgrade
       when: (groups['node'] | default([]) | length) > 0
       block:
+        # Must be the same host the agent unit template reads the token from
+        # (hostvars[groups[group_name_master][0]]['token']). groups['master']
+        # ordering is NOT stable between runs (k3s-7 is reachable via two
+        # child groups), so groups['master'][0] here sometimes picked a
+        # different master, left 'token' undefined on the primary, and the
+        # template fell back to the stale inventory k3s_token — which would
+        # have rewritten every agent unit with a token the cluster no longer
+        # accepts (caught in a --check run on 2026-09-19).
         - name: Read node-token from the primary master
           ansible.builtin.slurp:
             src: /var/lib/rancher/k3s/server/node-token
-          delegate_to: "{{ groups['master'][0] }}"
+          delegate_to: "{{ groups[group_name_master | default('primary-master')][0] }}"
           register: k3s_upgrade_node_token
 
         - name: Store the join token on the primary master's hostvars
           ansible.builtin.set_fact:
             token: "{{ k3s_upgrade_node_token.content | b64decode | regex_replace('\n', '') }}"
-          delegate_to: "{{ groups['master'][0] }}"
+          delegate_to: "{{ groups[group_name_master | default('primary-master')][0] }}"
           delegate_facts: true
 
 - name: Rolling server upgrade
@@ -482,7 +490,8 @@
             or prereq_kubelet_config is changed
             or prereq_containerd_config is changed
             or k3s_upgrade_service_file is changed
-            or (k3s_upgrade_registries is defined and k3s_upgrade_registries is changed)
+            or (k3s_custom_registries_file is defined and k3s_custom_registries_file is changed)
+            or (k3s_upgrade_registries_stale.stdout | default('no')) == 'yes'
           }}
 
     # --- Part B: guarded restart sequence. Only runs when Part A detected
@@ -696,7 +705,8 @@
             or prereq_kubelet_config is changed
             or prereq_containerd_config is changed
             or k3s_upgrade_service_file is changed
-            or (k3s_upgrade_registries is defined and k3s_upgrade_registries is changed)
+            or (k3s_custom_registries_file is defined and k3s_custom_registries_file is changed)
+            or (k3s_upgrade_registries_stale.stdout | default('no')) == 'yes'
           }}
 
     # --- Part B: guarded restart sequence (only if something changed). No

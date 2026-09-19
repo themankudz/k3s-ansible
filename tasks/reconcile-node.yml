@@ -22,10 +22,32 @@
   ansible.builtin.include_role:
     name: raspberrypi
 
+# The role registers the blockinfile result as k3s_custom_registries_file
+# (register: on an include_role does NOT carry the included tasks' changed
+# state — relying on it here silently skipped the restart on every registries
+# change until 2026-09-19).
 - name: Reconcile custom registries
   ansible.builtin.include_role:
     name: k3s_custom_registries
-  register: k3s_upgrade_registries
+  when: custom_registries | default(false) | bool
+
+# containerd only re-reads registries.yaml when k3s starts, so a file written
+# after the unit's last start (e.g. by a run that was interrupted, or by the
+# bug above) is a pending restart regardless of whether *this* run changed it.
+# Idempotent: false again once the unit has been restarted.
+- name: Check whether registries.yaml has changed since the k3s unit last started
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      f=/etc/rancher/k3s/registries.yaml
+      [ -f "$f" ] || { echo no; exit 0; }
+      unit={{ reconcile_node_service_dest | basename }}
+      started=$(date -d "$(systemctl show -p ActiveEnterTimestamp --value "$unit")" +%s 2>/dev/null || echo 0)
+      if [ "$(stat -c %Y "$f")" -gt "$started" ]; then echo yes; else echo no; fi
+    executable: /bin/bash
+  changed_when: false
+  check_mode: false
+  register: k3s_upgrade_registries_stale
   when: custom_registries | default(false) | bool
 
 - name: Reconcile the Longhorn multipath fix

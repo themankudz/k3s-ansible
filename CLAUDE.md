@@ -19,7 +19,7 @@ Ansible-based automation for deploying a k3s Kubernetes homelab cluster with kub
 - **API Endpoint (VIP)**: 192.168.50.200
 - **MetalLB IP Range**: 192.168.50.202-192.168.50.227 (homelab-cluster); 192.168.50.228-192.168.50.254 (workload-cluster)
 - **CNI**: Flannel (eth0 interface)
-- **Custom Registry**: Harbor at harbor.homecluster.co (caching docker.io, ghcr.io, quay.io, registry.k8s.io)
+- **Custom Registry**: Harbor at harbor.homecluster.co (workload cluster; caching docker.io, ghcr.io, quay.io, registry.k8s.io, mcr.microsoft.com) with a failover mirror at harbor-mgmt.homecluster.co (management cluster, k3s-8) — see `docs/registries.md`
 - **Master Taint**: Disabled (masters can run workloads)
 
 ---
@@ -110,6 +110,13 @@ growpart → pvresize → lvextend → resize2fs), converting a qcow2 vdisk to
 NOCOW/defragmented, disk-usage triage (`du -x`!), stale containerd lease
 cleanup, host-side latency checks (the 2026-09-17/18 outage root cause), and
 the Longhorn checks to do before taking a node down.
+
+### Registry mirrors (`registries.yaml`)
+
+`docs/registries.md` — the canonical, secret-free copy of the
+`custom_registries_yaml` block for both clusters (the inventories that hold it
+are gitignored), the Spegel → workload Harbor → `harbor-mgmt` endpoint order
+and why, and the rollout/verify commands. Update it whenever the block changes.
 
 ### Fleet maintenance (`upgrade-k3s.yml`)
 

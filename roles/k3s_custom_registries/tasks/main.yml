@@ -14,3 +14,7 @@
     block: "{{ custom_registries_yaml }}"
     mode: "0600"
     create: true
+  # Registered on the task itself: upgrade-k3s.yml's restart gate reads this.
+  # (register: on an include_role never carries the included tasks' changed
+  # state, which is how a registries change silently skipped the restart.)
+  register: k3s_custom_registries_file
