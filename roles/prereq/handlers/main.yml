@@ -3,3 +3,10 @@
   ansible.builtin.service:
     name: multipathd
     state: restarted
+
+# Safe on a live node: journald restarts in well under a second and systemd
+# keeps the stream sockets open, so no log lines are lost.
+- name: Restart journald
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted

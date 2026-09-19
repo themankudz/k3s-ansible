@@ -1,0 +1,129 @@
+---
+# Node log/disk hygiene. Live-node-safe (no k3s restart); included from
+# baseline.yml so both site.yml and upgrade-k3s.yml's reconcile path converge
+# it. Added after the 2026-09-17/18 workload-cluster outage: with the cluster
+# crash-looping, rsyslog's uncapped /var/log/syslog reached 4-7G per node and
+# helped push the 60G root disks into DiskPressure.
+
+# --- journald: cap the persistent journal ------------------------------------
+- name: Create journald drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    mode: "0755"
+
+- name: Cap journald disk usage
+  ansible.builtin.template:
+    src: journald-k3s-node.conf.j2
+    dest: /etc/systemd/journald.conf.d/50-k3s-node.conf
+    mode: "0644"
+  notify: Restart journald
+
+# --- rsyslog: journald already holds everything; rsyslog only duplicates it
+# into an uncapped text file. k3s/containerd/kubelet log to the journal, and
+# the SigNoz k8s-infra agent reads /var/log/pods, so nothing consumes syslog.
+- name: Gather service facts
+  ansible.builtin.service_facts:
+  when: disable_rsyslog
+
+- name: Stop and disable rsyslog
+  ansible.builtin.systemd:
+    name: rsyslog
+    enabled: false
+    state: stopped
+  when:
+    - disable_rsyslog
+    - "'rsyslog.service' in ansible_facts.services"
+
+- name: Find leftover rsyslog log files
+  ansible.builtin.find:
+    paths: /var/log
+    patterns: "syslog,syslog.*,auth.log,auth.log.*,kern.log,kern.log.*"
+    file_type: file
+  register: prereq_rsyslog_files
+  when: disable_rsyslog
+
+- name: Remove leftover rsyslog log files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ prereq_rsyslog_files.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when: disable_rsyslog
+
+# --- inotify: the kernel defaults (128 instances / 8192 watches per user) are
+# far too low for a k3s node -- kubelet, containerd, every log tailer (the
+# SigNoz filelog receiver) and udev all take instances, and once exhausted
+# things fail with "Too many open files" (seen on growpart/udevadm settle
+# 2026-09-18, and intermittently in kubelet/otel-agent logs).
+- name: Raise inotify limits for k3s nodes
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/90-k3s-inotify.conf
+    state: present
+    reload: true
+  loop:
+    - { name: fs.inotify.max_user_instances, value: "{{ inotify_max_user_instances }}" }
+    - { name: fs.inotify.max_user_watches, value: "{{ inotify_max_user_watches }}" }
+  loop_control:
+    label: "{{ item.name }}={{ item.value }}"
+  tags: sysctl
+
+# --- fstrim: Ubuntu enables fstrim.timer by default; make sure it stays so.
+# With discard=unmap on the VM disks this is what hands freed guest blocks
+# back to the host (a 200G Longhorn disk was found holding 180G of dead data).
+- name: Ensure weekly fstrim timer is enabled
+  ansible.builtin.systemd:
+    name: fstrim.timer
+    enabled: true
+    state: started
+  when: ansible_facts['os_family'] == "Debian"
+
+# --- k3s-node-guard (opt-in): hourly stale-lease cleanup + purge of
+# disposable data under disk pressure. See files/k3s-node-guard.sh.
+- name: Install k3s-node-guard script
+  ansible.builtin.copy:
+    src: k3s-node-guard.sh
+    dest: /usr/local/sbin/k3s-node-guard.sh
+    mode: "0755"
+  when: node_guard_enabled
+
+- name: Configure k3s-node-guard thresholds
+  ansible.builtin.template:
+    src: k3s-node-guard.env.j2
+    dest: /etc/default/k3s-node-guard
+    mode: "0644"
+  when: node_guard_enabled
+
+- name: Install k3s-node-guard systemd units
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop:
+    - k3s-node-guard.service
+    - k3s-node-guard.timer
+  register: prereq_node_guard_units
+  when: node_guard_enabled
+
+# In check mode the unit files above are not actually written, so systemd
+# can't find the timer yet -- skip rather than report a spurious failure.
+- name: Enable k3s-node-guard timer
+  ansible.builtin.systemd:
+    name: k3s-node-guard.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ prereq_node_guard_units is changed }}"
+  when:
+    - node_guard_enabled
+    - not (ansible_check_mode and prereq_node_guard_units is changed)
+
+- name: Disable k3s-node-guard timer when not wanted
+  ansible.builtin.systemd:
+    name: k3s-node-guard.timer
+    enabled: false
+    state: stopped
+  failed_when: false
+  when: not node_guard_enabled

@@ -51,6 +51,16 @@
   ansible.builtin.include_role:
     name: unattended_upgrades
 
+# Host-level otelcol-contrib shipping the node's journal (k3s/etcd/kernel...)
+# to SigNoz -- container logs go via the in-cluster k8s-infra agent, which
+# can't read the journal (no journalctl in its image). Independent of the
+# cluster being healthy, which is the point. Never feeds k3s_upgrade_needs_restart.
+- name: Reconcile node-level log shipping to SigNoz
+  ansible.builtin.include_role:
+    name: node_monitoring
+  when: node_monitoring_enabled | default(false) | bool
+  tags: monitoring
+
 - name: Reconcile prereq runtime config (kubelet/containerd — requires a k3s restart to take effect)
   ansible.builtin.include_role:
     name: prereq

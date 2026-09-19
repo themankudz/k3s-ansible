@@ -1,5 +1,43 @@
 # Managed by Ansible (roles/node_monitoring) — do not edit by hand.
+#
+# Deliberately NO disk-backed sending_queue: an unbounded on-disk telemetry
+# buffer is what helped fill the workload nodes' root disks in the 2026-09-17/18
+# outage. If SigNoz is unreachable, host logs drop after the retry window; the
+# journal itself is the durable copy (journalctl --since ...).
+{# The journald receiver emits the whole journal entry as a JSON body. Lift the
+   fields SigNoz needs: MESSAGE becomes the body, PRIORITY the severity, and
+   unit/identifier/transport become filterable attributes. #}
+{% macro journald_operators() %}
+    operators:
+      - type: move
+        from: body._SYSTEMD_UNIT
+        to: attributes["systemd.unit"]
+        if: body._SYSTEMD_UNIT != nil
+      - type: move
+        from: body.SYSLOG_IDENTIFIER
+        to: attributes["syslog.identifier"]
+        if: body.SYSLOG_IDENTIFIER != nil
+      - type: move
+        from: body._TRANSPORT
+        to: attributes["journald.transport"]
+        if: body._TRANSPORT != nil
+      - type: severity_parser
+        parse_from: body.PRIORITY
+        if: body.PRIORITY != nil
+        overwrite_text: true
+        mapping:
+          fatal: ["0", "1", "2"]
+          error: "3"
+          warn: "4"
+          info: ["5", "6"]
+          debug: "7"
+      - type: move
+        from: body.MESSAGE
+        to: body
+        if: body.MESSAGE != nil
+{% endmacro %}
 receivers:
+{% if node_monitoring_hostmetrics_enabled %}
   hostmetrics:
     collection_interval: {{ otelcol_collection_interval }}
     scrapers:
@@ -11,10 +49,58 @@ receivers:
       network: {}
       paging: {}
       processes: {}
+{% endif %}
+{% if node_monitoring_etcd_metrics_enabled %}
+  # k3s's embedded etcd, loopback-only. Keep just the health/latency series --
+  # the full endpoint is ~1500 lines of Go runtime and gRPC counters.
+  prometheus/etcd:
+    config:
+      scrape_configs:
+        - job_name: etcd
+          scrape_interval: {{ otelcol_collection_interval }}
+          static_configs:
+            - targets: ["{{ node_monitoring_etcd_metrics_endpoint }}"]
+          metric_relabel_configs:
+            - source_labels: [__name__]
+              regex: "etcd_(disk_wal_fsync_duration_seconds.*|disk_backend_commit_duration_seconds.*|server_leader_changes_seen_total|server_has_leader|server_proposals_failed_total|server_slow_apply_total|mvcc_db_total_size_in_bytes)"
+              action: keep
+{% endif %}
   journald:
     directory: /var/log/journal
+    priority: {{ node_monitoring_journald_priority }}
+{% if node_monitoring_journald_units | length > 0 %}
+    units:
+{% for unit in node_monitoring_journald_units %}
+      - {{ unit }}
+{% endfor %}
+{% endif %}
+{{ journald_operators() }}
+{% if node_monitoring_journald_dmesg %}
+  # Kernel messages need their own receiver: `dmesg: true` becomes
+  # `journalctl --dmesg`, whose _TRANSPORT=kernel match is ANDed with any
+  # --unit matches -- combined in one receiver the stream is empty.
+  journald/kernel:
+    directory: /var/log/journal
+    priority: {{ node_monitoring_journald_priority }}
+    dmesg: true
+{{ journald_operators() }}
+{% endif %}
+{% if node_monitoring_extra_log_files | length > 0 %}
+  filelog/extra:
+    include:
+{% for path in node_monitoring_extra_log_files %}
+      - {{ path }}
+{% endfor %}
+    start_at: end
+    include_file_name: false
+    include_file_path: true
+{% endif %}
 
 processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: {{ node_monitoring_memory_limit_mib }}
+    spike_limit_mib: {{ (node_monitoring_memory_limit_mib * 0.2) | int }}
   resourcedetection/system:
     detectors: [env, system]
     system:
@@ -32,6 +118,23 @@ processors:
       - key: signoz.cluster.name
         value: {{ signoz_cluster_name }}
         action: upsert
+{% if node_monitoring_k8s_node %}
+      - key: k8s.cluster.name
+        value: {{ node_monitoring_k8s_cluster_name }}
+        action: upsert
+      - key: k8s.node.name
+        value: {{ ansible_facts['hostname'] }}
+        action: upsert
+{% endif %}
+{% if node_monitoring_k8s_node %}
+  # Logs only: lets SigNoz tell host-journal records from the k8s-infra
+  # agent's container logs of the same node.
+  resource/logs:
+    attributes:
+      - key: log.source
+        value: node
+        action: upsert
+{% endif %}
   batch: {}
 
 exporters:
@@ -46,11 +149,14 @@ exporters:
 
 service:
   pipelines:
+{% set _metric_receivers = (['hostmetrics'] if node_monitoring_hostmetrics_enabled else []) + (['prometheus/etcd'] if node_monitoring_etcd_metrics_enabled else []) %}
+{% if _metric_receivers | length > 0 %}
     metrics:
-      receivers: [hostmetrics]
-      processors: [resourcedetection/system, resource, batch]
+      receivers: [{{ _metric_receivers | join(', ') }}]
+      processors: [memory_limiter, resourcedetection/system, resource, batch]
       exporters: [otlp]
+{% endif %}
     logs:
-      receivers: [journald]
-      processors: [resourcedetection/system, resource, batch]
+      receivers: [journald{% if node_monitoring_journald_dmesg %}, journald/kernel{% endif %}{% if node_monitoring_extra_log_files | length > 0 %}, filelog/extra{% endif %}]
+      processors: [memory_limiter, resourcedetection/system, resource{% if node_monitoring_k8s_node %}, resource/logs{% endif %}, batch]
       exporters: [otlp]

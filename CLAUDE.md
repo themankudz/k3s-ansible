@@ -102,6 +102,15 @@ yamllint .
 
 ansible-lint runs with `profile: production`. The only suppressed rule is `var-naming[no-role-prefix]`.
 
+### Node runbook
+
+`docs/node-runbook.md` — hands-on commands for the workload-cluster VMs and the
+Unraid host that runs them: growing a root disk online (virsh blockresize →
+growpart → pvresize → lvextend → resize2fs), converting a qcow2 vdisk to
+NOCOW/defragmented, disk-usage triage (`du -x`!), stale containerd lease
+cleanup, host-side latency checks (the 2026-09-17/18 outage root cause), and
+the Longhorn checks to do before taking a node down.
+
 ### Fleet maintenance (`upgrade-k3s.yml`)
 
 `upgrade-k3s.yml` is the primary day-to-day playbook for an
@@ -180,7 +189,7 @@ writeup this playbook was built to prevent recurring.
 
 | Role | Purpose |
 |------|---------|
-| **prereq** | System prerequisites: timezone (Europe/London), packages (open-iscsi, nfs-common), multipath config, kubelet config, apt proxy (192.168.50.220:3142). Split into `tasks/baseline.yml` (live-node-safe, no k3s restart) and `tasks/runtime-config.yml` (kubelet/containerd config — requires a restart, left to the caller); `tasks/main.yml` runs both in order for the bootstrap (`site.yml`) path. |
+| **prereq** | System prerequisites: timezone (Europe/London), packages (open-iscsi, nfs-common), multipath config, kubelet config, apt proxy (192.168.50.220:3142). Split into `tasks/baseline.yml` (live-node-safe, no k3s restart) and `tasks/runtime-config.yml` (kubelet/containerd config — requires a restart, left to the caller); `tasks/main.yml` runs both in order for the bootstrap (`site.yml`) path. `baseline.yml` also includes `tasks/node-hygiene.yml` (tag `hygiene`): caps journald (`SystemMaxUse=500M`), stops/disables rsyslog and removes its files (journald already holds everything; an uncapped `/var/log/syslog` hit 4–7G/node in the 2026-09-17/18 outage), raises inotify limits (`fs.inotify.max_user_instances=1024`, `max_user_watches=1048576` — kernel defaults are exhausted on a busy node), keeps `fstrim.timer` enabled, sets `ForwardToSyslog=no` when rsyslog is disabled (otherwise journald logs "Forwarding to syslog missed N messages" forever), and optionally (`node_guard_enabled: true`, default off) installs the hourly `k3s-node-guard` timer that removes containerd leases older than 2h (leftovers of interrupted pulls; containerd has no lease-expiry setting; complete images are untouched so Spegel's cache survives) and purges disposable hostPath data only at 88% root usage, just before kubelet's soft eviction. It never prunes images — kubelet's image GC handles that at 85%. |
 | **download** | Download and install k3s binary |
 | **raspberrypi** | Pi-specific boot config (cgroups, cmdline.txt) — Pi nodes only |
 | **k3s_custom_registries** | Configure Harbor registry mirrors with insecure TLS |
@@ -194,16 +203,17 @@ writeup this playbook was built to prevent recurring.
 
 ### Shared / generic infra roles
 
-`unattended_upgrades` and `mail_relay` are used by **both** `infra.yml` (non-k3s VMs) and the k3s
+`unattended_upgrades`, `mail_relay` and `node_monitoring` are used by **both** `infra.yml` (non-k3s VMs) and the k3s
 path (`site.yml`'s "Prepare k3s nodes" play, and every `upgrade-k3s.yml` run via
-`tasks/reconcile-node.yml`). `base_system` remains `infra.yml`-only — k3s nodes use `prereq` instead.
+`tasks/reconcile-node.yml`; `node_monitoring` only when `node_monitoring_enabled: true`, set in both
+cluster inventories' `group_vars/all.yml`). `base_system` remains `infra.yml`-only — k3s nodes use `prereq` instead.
 
 | Role | Purpose |
 |------|---------|
 | **base_system** | Generic Debian/Ubuntu OS baseline: timezone, apt-proxy, optional `base_packages`, optional `base_ip_forward` sysctl (off by default). The non-k3s extraction of `prereq`. `infra.yml`-only. |
 | **unattended_upgrades** | Installs and fully owns unattended-upgrades: `20auto-upgrades`, `50unattended-upgrades` (allowed origins, remove-unused, optional auto-reboot, and the `Mail`/`MailReport` directives gated on `unattended_upgrades_mail`), plus the `InhibitDelayMaxSec=90` logind tweak. |
 | **mail_relay** | Postfix send-only relay to an SMTP smarthost (Amazon SES). Refactor of the retired `mail-setup` role: postmap runs via handler, test email is opt-in (`mail_relay_send_test`), and it no longer touches `50unattended-upgrades`. Gated on `mail_relay_enabled` (default `true`) wherever it's included. |
-| **node_monitoring** | Installs `otelcol-contrib` (arch-mapped GitHub `.deb`, pinned by `otelcol_version`) and configures it to forward host metrics (`hostmetrics`) + host logs (`journald`) to SigNoz (`signoz_otlp_endpoint`, TLS). Runs as the `otelcol-contrib` user in the `systemd-journal`/`adm` groups. |
+| **node_monitoring** | Installs `otelcol-contrib` (arch-mapped GitHub `.deb`, pinned by `otelcol_version`) and configures it to forward host metrics (`hostmetrics`, `node_monitoring_hostmetrics_enabled`) + host logs (`journald`, scoped by `node_monitoring_journald_units`; `node_monitoring_journald_dmesg` adds a **separate** `journald/kernel` receiver — `--dmesg` ANDs with `--unit` inside one receiver and yields nothing) + optional extra files (`node_monitoring_extra_log_files`, with traverse ACLs from `node_monitoring_traverse_dirs`) to SigNoz (`signoz_otlp_endpoint`, TLS). Journal entries are reshaped by stanza operators: `MESSAGE` → body, `PRIORITY` → severity, `systemd.unit`/`syslog.identifier`/`journald.transport` attributes. On k3s nodes (`node_monitoring_k8s_node: true`) logs carry `k8s.cluster.name`/`k8s.node.name` matching the k8s-infra agent plus `log.source=node`; hostmetrics is off there (k8s-infra's hostMetrics preset already covers it). `node_monitoring_etcd_metrics_enabled` (server nodes: workload `all.yml`, management `group_vars/master.yml`) scrapes k3s's loopback-only etcd metrics on `127.0.0.1:2381` — only a host-level collector can reach them — feeding the SigNoz "etcd WAL fsync latency (node disk)" alert. No disk-backed queue on purpose (see the 2026-09-17/18 outage). Runs as the `otelcol-contrib` user in the `systemd-journal`/`adm` groups. |
 
 ### longhorn_node_fix role
 

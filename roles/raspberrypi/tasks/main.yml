@@ -4,12 +4,14 @@
   register: grep_cpuinfo_raspberrypi
   failed_when: false
   changed_when: false
+  check_mode: false  # read-only probe; must run in --check or the Pi-only tasks below aren't gated
 
 - name: Test for raspberry pi /proc/device-tree/model
   ansible.builtin.command: grep -E "Raspberry Pi" /proc/device-tree/model
   register: grep_device_tree_model_raspberrypi
   failed_when: false
   changed_when: false
+  check_mode: false  # read-only probe; must run in --check or the Pi-only tasks below aren't gated
 
 - name: Set raspberry_pi fact to true
   ansible.builtin.set_fact:

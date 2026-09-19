@@ -15,3 +15,25 @@ argument_specs:
         description: Optional ingestion key sent as signoz-access-token header. Empty disables the header.
       otelcol_collection_interval:
         description: hostmetrics scrape interval (e.g. 30s).
+      node_monitoring_hostmetrics_enabled:
+        description: Collect host metrics. Disable on k3s nodes (k8s-infra already does).
+      node_monitoring_journald_units:
+        description: systemd units to collect from the journal. Empty list collects everything.
+      node_monitoring_journald_priority:
+        description: Minimum journal priority to collect (emerg..debug).
+      node_monitoring_journald_dmesg:
+        description: Also collect kernel messages.
+      node_monitoring_extra_log_files:
+        description: Extra plain-text log files to tail with the filelog receiver.
+      node_monitoring_traverse_dirs:
+        description: Root-only parent directories of those files; the agent user gets a traverse-only ACL on each.
+      node_monitoring_k8s_node:
+        description: Attach k8s.cluster.name / k8s.node.name / log.source=node attributes (k3s nodes).
+      node_monitoring_k8s_cluster_name:
+        description: Value for k8s.cluster.name when node_monitoring_k8s_node is true.
+      node_monitoring_etcd_metrics_enabled:
+        description: Scrape k3s's embedded etcd metrics (loopback-only :2381) on server nodes.
+      node_monitoring_etcd_metrics_endpoint:
+        description: host:port of the etcd metrics listener.
+      node_monitoring_memory_limit_mib:
+        description: memory_limiter ceiling for the collector process.

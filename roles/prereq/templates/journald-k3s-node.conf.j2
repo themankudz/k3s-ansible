@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+# Cap the persistent journal so a crash-looping cluster can't fill the root
+# disk with logs (2026-09-17/18 outage: journald + rsyslog reached 4-7G/node).
+[Journal]
+SystemMaxUse={{ journald_system_max_use }}
+SystemMaxFileSize={{ journald_system_max_file_size }}
+{% if disable_rsyslog %}
+# rsyslog is disabled on this node; without this journald keeps trying and
+# logs "Forwarding to syslog missed N messages" every few seconds.
+ForwardToSyslog=no
+{% endif %}

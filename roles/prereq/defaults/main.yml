@@ -4,3 +4,29 @@ disable_swap: true
 secure_path:
   RedHat: /sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin
   Suse: /usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin
+
+# --- node log/disk hygiene (tasks/node-hygiene.yml) --------------------------
+# journald is the only system logger on the nodes; rsyslog just mirrors it into
+# an uncapped /var/log/syslog (4-7G/node during the 2026-09-17/18 outage).
+disable_rsyslog: true
+journald_system_max_use: 500M
+journald_system_max_file_size: 100M
+# Kernel defaults are 128 / 8192 -- exhausted on a busy k3s node.
+inotify_max_user_instances: 1024
+inotify_max_user_watches: 1048576
+
+# k3s-node-guard: hourly timer that removes containerd leases older than
+# node_guard_lease_max_age_hours (leftovers of interrupted pulls -- containerd
+# has no config for lease expiry; complete images are never touched, so
+# Spegel's cache is unaffected) and, only when the root fs is at/over
+# node_guard_disk_pressure_pct, purges node_guard_purge_dirs and vacuums the
+# journal. It never prunes images: kubelet's image GC does that at 85%.
+# The threshold sits just under kubelet's soft eviction line (10% free).
+# Opt-in.
+node_guard_enabled: false
+node_guard_lease_max_age_hours: 2
+node_guard_disk_pressure_pct: 88
+node_guard_purge_dirs:
+  - /var/lib/otel-agent-queue
+node_guard_journal_vacuum_size: 300M
+node_guard_tempdb_max_age_min: 60

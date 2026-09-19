@@ -64,6 +64,9 @@
       when: mail_relay_enabled | default(true) | bool
     - role: unattended_upgrades
       become: true
+    - role: node_monitoring
+      become: true
+      when: node_monitoring_enabled | default(false) | bool
 
 - name: Setup k3s servers
   hosts: master

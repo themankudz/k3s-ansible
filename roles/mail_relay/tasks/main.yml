@@ -33,8 +33,11 @@
     # actually needed installing — breaking upgrade-k3s.yml's idempotency
     # guarantee (a converged host must report changed=0 on a repeat run).
     cache_valid_time: 3600
+  register: mail_relay_packages
   tags: install
 
+# Skipped in check mode on a fresh host: postfix isn't really installed yet,
+# so /etc/postfix/main.cf doesn't exist for lineinfile to edit.
 - name: Configure postfix main.cf
   ansible.builtin.lineinfile:
     line: "{{ item.line }}"
@@ -56,6 +59,7 @@
   loop_control:
     label: "{{ item.line }}"
   notify: Restart postfix
+  when: not (ansible_check_mode and mail_relay_packages is changed)
 
 - name: Copy sasl password file to host
   ansible.builtin.template:

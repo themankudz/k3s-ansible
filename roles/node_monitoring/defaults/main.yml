@@ -1,6 +1,14 @@
 ---
 # OpenTelemetry Collector (contrib distro) forwarding host metrics + host logs
 # to the self-hosted SigNoz OTLP ingress.
+#
+# Two shapes:
+#   * standalone VMs (infra.yml): host metrics + full journal (defaults below).
+#   * k3s nodes (reconcile-node.yml / site.yml): journal + containerd log only,
+#     scoped to the units that matter -- the in-cluster k8s-infra agent already
+#     collects host metrics and container logs, so this must not duplicate them.
+#     Set node_monitoring_hostmetrics_enabled: false and scope
+#     node_monitoring_journald_units in the cluster's group_vars.
 
 # otelcol-contrib release to install (no "v" prefix; the GitHub tag adds it).
 otelcol_version: "0.153.0"
@@ -18,3 +26,38 @@ signoz_ingestion_key: ""
 
 # hostmetrics scrape interval.
 otelcol_collection_interval: "30s"
+
+# --- what to collect -------------------------------------------------------
+# Host metrics pipeline. False on k3s nodes (k8s-infra's hostMetrics preset).
+node_monitoring_hostmetrics_enabled: true
+
+# journald: empty list = every unit. On k3s nodes scope it, k3s is chatty.
+node_monitoring_journald_units: []
+# Minimum priority to collect (emerg..debug).
+node_monitoring_journald_priority: info
+# Also collect kernel messages (OOM kills, I/O errors, filesystem trouble).
+node_monitoring_journald_dmesg: false
+
+# Extra plain-text log files to tail (filelog receiver). k3s's embedded
+# containerd logs to a file, not the journal.
+node_monitoring_extra_log_files: []
+# Root-only directories on the path to those files; the agent user gets a
+# traverse-only (x) ACL on each so it can open the (0644) files beneath.
+node_monitoring_traverse_dirs: []
+
+# Set on k3s nodes so host logs carry the same k8s.cluster.name /
+# k8s.node.name attributes as the k8s-infra container logs from that node.
+node_monitoring_k8s_node: false
+node_monitoring_k8s_cluster_name: "{{ signoz_cluster_name }}"
+
+# Scrape k3s's embedded etcd (server nodes only). k3s binds etcd metrics to
+# 127.0.0.1:2381 unless etcd-expose-metrics is set, so only a host-level
+# collector can reach them. etcd_disk_wal_fsync_duration_seconds is the
+# leading indicator of the 2026-09-17/18 outage (host disk latency -> etcd
+# fsync 1-6 s -> leader election lost -> k3s crash loop).
+node_monitoring_etcd_metrics_enabled: false
+node_monitoring_etcd_metrics_endpoint: 127.0.0.1:2381
+
+# Collector memory ceiling (memory_limiter). The .deb runs as a plain systemd
+# service with no cgroup limit, so this is the only cap it has.
+node_monitoring_memory_limit_mib: 256

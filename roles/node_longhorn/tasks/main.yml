@@ -21,6 +21,7 @@
   ansible.builtin.command: blkid -o value -s UUID {{ node_longhorn_disk }}
   register: _longhorn_uuid
   changed_when: false
+  check_mode: false  # read-only probe; without it --check compares the mount against an empty UUID and reports a change
   when: node_longhorn_disk != ""
 
 - name: Create Longhorn mount point

@@ -1,0 +1,12 @@
+[Unit]
+Description=k3s node hygiene guard (stale containerd leases, disposable-data purge under disk pressure)
+Documentation=file:/usr/local/sbin/k3s-node-guard.sh
+After=k3s.service k3s-node.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/k3s-node-guard
+ExecStart=/usr/local/sbin/k3s-node-guard.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

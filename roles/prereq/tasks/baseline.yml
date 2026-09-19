@@ -166,3 +166,7 @@
     insertafter: EOF
     path: /usr/lib/systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf
   tags: inhibit
+
+- name: Include node log/disk hygiene tasks
+  ansible.builtin.include_tasks: node-hygiene.yml
+  tags: hygiene

@@ -23,6 +23,7 @@
     _otelcol_base: "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download"
     _otelcol_file: "otelcol-contrib_{{ otelcol_version }}_linux_{{ _otelcol_arch }}.deb"
     _otelcol_deb_url: "{{ _otelcol_base }}/v{{ otelcol_version }}/{{ _otelcol_file }}"
+  register: _otelcol_deb
   when: _otelcol_installed.stdout != otelcol_version
 
 # Run the agent as its own user but grant journal + log read access so the
@@ -36,6 +37,29 @@
     append: true
   notify: Restart otelcol-contrib
 
+# Extra log files may sit under root-only directories (k3s keeps
+# /var/lib/rancher/k3s/agent at 0700). Grant the agent user traverse (x) on
+# the parent directories only -- the files themselves are already 0644 -- so
+# it can open them without the collector running as root.
+- name: Install acl for directory traverse grants
+  ansible.builtin.apt:
+    name: acl
+    state: present
+  register: _otelcol_acl_pkg
+  when: node_monitoring_traverse_dirs | length > 0
+
+# Skipped in check mode when acl would only just have been installed
+# (setfacl isn't really there yet, so the module can't run).
+- name: Grant otelcol-contrib traverse access to log parent directories
+  ansible.posix.acl:
+    path: "{{ item }}"
+    entity: otelcol-contrib
+    etype: user
+    permissions: x
+    state: present
+  loop: "{{ node_monitoring_traverse_dirs }}"
+  when: not (ansible_check_mode and _otelcol_acl_pkg is changed)
+
 - name: Template otelcol-contrib config
   ansible.builtin.template:
     src: config.yaml.j2
@@ -45,9 +69,11 @@
     mode: "0640"
   notify: Restart otelcol-contrib
 
+# Skipped in check mode on a fresh install (the unit isn't really there yet).
 - name: Enable and start otelcol-contrib
   ansible.builtin.systemd:
     name: otelcol-contrib
     enabled: true
     state: started
     daemon_reload: true
+  when: not (ansible_check_mode and _otelcol_deb is changed)
