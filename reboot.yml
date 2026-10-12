@@ -20,19 +20,103 @@
     # the safety. Disable with -e drain_before_reboot=false.
     drain_before_reboot: true
     drain_timeout: 300s
+    # Opt-in (-e longhorn_evict_before_drain=true): before draining, disable
+    # scheduling on the Longhorn node, request eviction and wait for every
+    # replica to move off it, so volumes keep full redundancy while the node is
+    # down. Off by default: it fully rebuilds every replica on every node (a
+    # cluster reboot goes from minutes to 30-40 min) just to avoid a ~2 min
+    # single-replica window; the replicas left in place are reused on return.
+    # The cluster's node-drain-policy (block-for-eviction-if-contains-last-replica)
+    # already auto-evicts any replica that is a volume's last healthy copy.
+    # Eviction does NOT unblock a drain stuck on a volume that is still
+    # attached here (its engine keeps the instance-manager PDB at 0) — the
+    # drain's rescue below lists those attachment tickets. Only applies when
+    # longhorn_check and drain_before_reboot are both on. 80 x 15s = 20 min.
+    longhorn_evict_before_drain: false
+    longhorn_evict_retries: 80
+    longhorn_evict_delay: 15
   tasks:
-    - name: Cordon and drain the node before reboot
+    - name: Disable Longhorn scheduling and request replica eviction
       ansible.builtin.command:
         cmd: >-
           kubectl --context {{ kubectl_context }}
-          drain {{ ansible_facts['hostname'] }}
-          --ignore-daemonsets
-          --delete-emptydir-data
-          --timeout={{ drain_timeout }}
+          -n {{ longhorn_namespace }}
+          patch nodes.longhorn.io {{ ansible_facts['hostname'] }}
+          --type=merge
+          -p '{"spec":{"allowScheduling":false,"evictionRequested":true}}'
       delegate_to: localhost
       become: false
       changed_when: true
+      when: &longhorn_evict
+        - drain_before_reboot | bool
+        - longhorn_check | bool
+        - longhorn_evict_before_drain | bool
+
+    - name: Wait for all Longhorn replicas to be evicted from the node
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --context {{ kubectl_context }}
+          -n {{ longhorn_namespace }}
+          get replicas.longhorn.io
+          -l longhornnode={{ ansible_facts['hostname'] }}
+          -o name
+      delegate_to: localhost
+      become: false
+      register: longhorn_node_replicas
+      changed_when: false
+      until: longhorn_node_replicas.stdout | length == 0
+      retries: "{{ longhorn_evict_retries }}"
+      delay: "{{ longhorn_evict_delay }}"
+      when: *longhorn_evict
+
+    - name: Cordon and drain the node before reboot
       when: drain_before_reboot | bool
+      block:
+        - name: Cordon and drain the node before reboot
+          ansible.builtin.command:
+            cmd: >-
+              kubectl --context {{ kubectl_context }}
+              drain {{ ansible_facts['hostname'] }}
+              --ignore-daemonsets
+              --delete-emptydir-data
+              --timeout={{ drain_timeout }}
+          delegate_to: localhost
+          become: false
+          changed_when: true
+      rescue:
+        # The usual cause once replicas are gone: a volume still attached
+        # here keeps an engine on this node, so its instance-manager PDB stays
+        # at 0. Show which volumes and which attachment tickets hold them
+        # (e.g. a pod pinned to this node by nodeSelector, or stale
+        # snapshot-controller tickets).
+        - name: List Longhorn volumes still attached to the node
+          ansible.builtin.shell:
+            cmd: >-
+              set -o pipefail;
+              kubectl --context {{ kubectl_context }}
+              -n {{ longhorn_namespace }}
+              get volumeattachments.longhorn.io -o json
+              | jq -r --arg n "{{ ansible_facts['hostname'] }}"
+              '.items[] | .metadata.name as $v
+              | .spec.attachmentTickets // {} | to_entries[]
+              | select(.value.nodeID == $n)
+              | "\($v) \(.value.type) \(.key)"'
+            executable: /bin/bash
+          delegate_to: localhost
+          become: false
+          register: longhorn_attached_here
+          changed_when: false
+          failed_when: false
+          when: longhorn_check | bool
+
+        - name: Fail with the drain blockers
+          ansible.builtin.fail:
+            msg: >-
+              Drain of {{ ansible_facts['hostname'] }} failed.
+              Longhorn attachment tickets still on this node (volume type ticket):
+              {{ (longhorn_attached_here.stdout_lines | default([])) or 'none' }}.
+              The node is left cordoned (and, if eviction ran, disabled in
+              Longhorn) — uncordon / re-enable it once fixed.
 
     - name: Reboot the node (and wait up to 5 mins max for it to come back)
       become: true
@@ -72,6 +156,19 @@
       become: false
       changed_when: true
       when: drain_before_reboot | bool
+
+    - name: Re-enable Longhorn scheduling and clear the eviction request
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --context {{ kubectl_context }}
+          -n {{ longhorn_namespace }}
+          patch nodes.longhorn.io {{ ansible_facts['hostname'] }}
+          --type=merge
+          -p '{"spec":{"allowScheduling":true,"evictionRequested":false}}'
+      delegate_to: localhost
+      become: false
+      changed_when: true
+      when: *longhorn_evict
 
     - name: Wait for Longhorn to finish rebuilding (no degraded volumes)
       ansible.builtin.command:
