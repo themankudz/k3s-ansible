@@ -12,3 +12,43 @@
     name: linux-modules-extra-raspi
     state: present
   when: ansible_facts['distribution_version'] is version('24.04', '<')
+
+# The Ubuntu Pi image's cloud-init netplan marks eth0 `optional: true`, so
+# netplan never hooks systemd-networkd-wait-online into network-online.target
+# (its drop-in skips the unit unless netplan's generator linked it; enabling the
+# unit does nothing). k3s, ordered After=network-online.target, then starts
+# before eth0's DHCP lease, finds no upstream nameserver and pins kubelet to
+# 8.8.8.8 until its next restart (2026-10-12: hostNetwork pods and CoreDNS on
+# every Pi lost Pi-hole's local names). This override, merged after
+# 50-cloud-init.yaml, makes eth0 required, so boot waits for DHCP. Picked up by
+# netplan's generator at the next boot; nothing is applied now. wlan0 is
+# unmanaged on the Pis, so it can't stall boot.
+- name: Make eth0 required by netplan so boot waits for its DHCP lease
+  ansible.builtin.copy:
+    dest: /etc/netplan/90-k3s-eth0-required.yaml
+    content: |
+      # Managed by Ansible (raspberrypi role). See roles/raspberrypi/tasks/setup/Ubuntu.yml.
+      network:
+        version: 2
+        ethernets:
+          eth0:
+            optional: false
+    owner: root
+    group: root
+    mode: "0600"
+  tags: network_online
+
+- name: Read eth0's merged netplan "optional" setting
+  ansible.builtin.command: netplan get ethernets.eth0.optional
+  register: raspberrypi_eth0_optional
+  changed_when: false
+  check_mode: false
+  tags: network_online
+
+- name: Assert netplan now treats eth0 as required
+  ansible.builtin.assert:
+    # false is the default, so `netplan get` prints null once the override wins.
+    that: raspberrypi_eth0_optional.stdout | trim != "true"
+    fail_msg: "netplan still reports ethernets.eth0.optional={{ raspberrypi_eth0_optional.stdout | trim }}"
+  when: not ansible_check_mode
+  tags: network_online
