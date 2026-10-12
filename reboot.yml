@@ -20,6 +20,14 @@
     # the safety. Disable with -e drain_before_reboot=false.
     drain_before_reboot: true
     drain_timeout: 300s
+    # Per-host opt-out: set reboot_skip_drain: true in a host's (or host
+    # group's) inventory vars for a node whose workloads can't move anyway —
+    # e.g. k3s-8, the management cluster's only amd64 node, whose pinned Harbor
+    # mirror sits on single-replica strict-local volumes (draining it would only
+    # make Longhorn try to auto-evict those last copies and time out). Play vars
+    # outrank inventory vars, so the opt-out has to be read here rather than by
+    # overriding drain_before_reboot per host.
+    reboot_drain: "{{ (drain_before_reboot | bool) and not (reboot_skip_drain | default(false) | bool) }}"
     # Opt-in (-e longhorn_evict_before_drain=true): before draining, disable
     # scheduling on the Longhorn node, request eviction and wait for every
     # replica to move off it, so volumes keep full redundancy while the node is
@@ -36,6 +44,43 @@
     longhorn_evict_retries: 80
     longhorn_evict_delay: 15
   tasks:
+    # Longhorn (seen on v1.12.1) leaks snapshot-controller attachment tickets:
+    # the ticket outlives its snapshot, so the volume stays attached to this
+    # node with no consumer, its engine keeps the instance-manager PDB at 0 and
+    # the drain hangs. Remove only this node's snapshot-controller tickets whose
+    # snapshot no longer exists (ticket id = snapshot-controller-<snapshot
+    # name>; uids are checked too). Attachments are read BEFORE snapshots so a
+    # snapshot created mid-check is always in the second list — a ticket can't
+    # exist before its snapshot CR does, so it can't be mistaken for stale.
+    - name: Remove stale Longhorn snapshot attachment tickets on the node
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          k() { kubectl --context {{ kubectl_context | quote }} -n {{ longhorn_namespace | quote }} "$@"; }
+          va=$(k get volumeattachments.longhorn.io -o json)
+          ids=$(k get snapshots.longhorn.io -o json | jq '[.items[] | .metadata.name, .metadata.uid]')
+          jq -c --argjson ids "$ids" --arg node {{ ansible_facts['hostname'] | quote }} '
+            .items[] | .metadata.name as $v
+            | [(.spec.attachmentTickets // {}) | to_entries[]
+               | select(.value.type == "snapshot-controller" and .value.nodeID == $node)
+               | .key
+               | select((ltrimstr("snapshot-controller-")) as $k | ($ids | index($k)) == null)]
+            | select(length > 0)
+            | {v: $v, ops: map({op: "remove", path: "/spec/attachmentTickets/\(.)"})}' <<<"$va" \
+          | while read -r line; do
+              v=$(jq -r .v <<<"$line")
+              k patch volumeattachments.longhorn.io "$v" --type=json -p "$(jq -c .ops <<<"$line")" >/dev/null
+              echo "removed $(jq '.ops | length' <<<"$line") stale ticket(s) from $v"
+            done
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      register: longhorn_stale_tickets
+      changed_when: longhorn_stale_tickets.stdout | length > 0
+      when:
+        - reboot_drain | bool
+        - longhorn_check | bool
+
     - name: Disable Longhorn scheduling and request replica eviction
       ansible.builtin.command:
         cmd: >-
@@ -48,7 +93,7 @@
       become: false
       changed_when: true
       when: &longhorn_evict
-        - drain_before_reboot | bool
+        - reboot_drain | bool
         - longhorn_check | bool
         - longhorn_evict_before_drain | bool
 
@@ -70,7 +115,7 @@
       when: *longhorn_evict
 
     - name: Cordon and drain the node before reboot
-      when: drain_before_reboot | bool
+      when: reboot_drain | bool
       block:
         - name: Cordon and drain the node before reboot
           ansible.builtin.command:
@@ -155,7 +200,7 @@
       delegate_to: localhost
       become: false
       changed_when: true
-      when: drain_before_reboot | bool
+      when: reboot_drain | bool
 
     - name: Re-enable Longhorn scheduling and clear the eviction request
       ansible.builtin.command:
