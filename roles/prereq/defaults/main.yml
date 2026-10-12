@@ -43,3 +43,14 @@ node_guard_purge_dirs:
   - "/var/lib/kubelet/pods/*/volumes/kubernetes.io~empty-dir/otel-agent-queue"
 node_guard_journal_vacuum_size: 300M
 node_guard_tempdb_max_age_min: 60
+
+# --- /etc/hosts pins (tasks/static-hosts.yml) --------------------------------
+# Hostnames with fixed IPs that image pulls must resolve without DNS. Both
+# Pi-holes run on the management cluster, so without these a DNS outage makes
+# both Harbors unreachable together. Must match homelab-k3s pihole/values.yaml.
+# An empty list removes the managed block.
+static_hosts:
+  - ip: 192.168.50.228   # workload internal-nginx (Harbor)
+    names: [harbor.homecluster.co]
+  - ip: 192.168.50.215   # management internal-nginx
+    names: [harbor-mgmt.homecluster.co]

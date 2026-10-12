@@ -1,0 +1,17 @@
+---
+# Pin hostnames whose IPs never change in /etc/hosts, so pulling images doesn't
+# depend on DNS. Both Pi-holes run on the management cluster, so a management
+# outage (or restarting both Pi-holes at once) would otherwise make BOTH Harbors
+# unresolvable from every node at the same moment, even though both are up.
+# Live-node-safe: containerd and kubelet resolve per lookup, so no restart is
+# needed. Cloud-init doesn't manage /etc/hosts on these nodes (checked
+# 2026-10-12). Keep in step with homelab-k3s pihole/values.yaml.
+- name: Pin static hostnames in /etc/hosts
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED: static_hosts (prereq role)"
+    block: |
+      {% for h in static_hosts %}
+      {{ h.ip }} {{ h.names | join(' ') }}
+      {% endfor %}
+    state: "{{ 'present' if static_hosts | length > 0 else 'absent' }}"
