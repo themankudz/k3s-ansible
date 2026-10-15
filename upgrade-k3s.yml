@@ -62,6 +62,16 @@
   tags: [always]
   vars: &upgrade_vars
     k3s_upgrade_drain: true
+    # Per-host opt-out: set k3s_upgrade_skip_drain: true in a host's inventory
+    # vars for a node that can't be drained -- k3s-8, whose pinned Harbor
+    # mirror sits on single-replica strict-local volumes, so Longhorn's
+    # instance-manager PDB never allows the eviction. The drain then evicts
+    # harbor-mgmt, times out and fails the run before the restart and the
+    # uncordon, leaving it down (2026-10-15). A k3s restart doesn't need a
+    # drain (KillMode=process keeps pods running). Computed here because play
+    # vars outrank inventory vars (same pattern as reboot.yml's
+    # reboot_skip_drain).
+    k3s_upgrade_node_drain: "{{ (k3s_upgrade_drain | bool) and not (k3s_upgrade_skip_drain | default(false) | bool) }}"
     k3s_upgrade_drain_timeout: 300s
     k3s_upgrade_peer_readyz_retries: 30
     k3s_upgrade_peer_readyz_delay: 5
@@ -538,7 +548,7 @@
               --timeout={{ k3s_upgrade_drain_timeout }}
           delegate_to: "{{ k3s_upgrade_via }}"
           changed_when: true
-          when: k3s_upgrade_drain | bool
+          when: k3s_upgrade_node_drain | bool
 
         - name: Restart k3s
           ansible.builtin.systemd:
@@ -641,7 +651,7 @@
           delegate_to: "{{ k3s_upgrade_via }}"
           changed_when: true
           when:
-            - k3s_upgrade_drain | bool
+            - k3s_upgrade_node_drain | bool
             - k3s_upgrade_precordon_state.stdout | trim != 'true'
 
         - name: Wait for Longhorn to settle (no degraded volumes)
@@ -740,7 +750,7 @@
               --timeout={{ k3s_upgrade_drain_timeout }}
           delegate_to: "{{ k3s_upgrade_via }}"
           changed_when: true
-          when: k3s_upgrade_drain | bool
+          when: k3s_upgrade_node_drain | bool
 
         - name: Restart k3s-node
           ansible.builtin.systemd:
@@ -833,7 +843,7 @@
           delegate_to: "{{ k3s_upgrade_via }}"
           changed_when: true
           when:
-            - k3s_upgrade_drain | bool
+            - k3s_upgrade_node_drain | bool
             - k3s_upgrade_precordon_state.stdout | trim != 'true'
 
         - name: Wait for Longhorn to settle (no degraded volumes)

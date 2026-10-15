@@ -25,8 +25,8 @@
 #
 # Deliberately NOT done: image pruning. kubelet's image GC already removes
 # unused images LRU-first once the disk passes 85% (imageGCHighThresholdPercent),
-# and the cached images are what Spegel serves to peers -- the lease sweep only
-# removes leftovers of interrupted pulls, never complete images.
+# so pruning here would only duplicate it -- the lease sweep only removes
+# leftovers of interrupted pulls, never complete images.
 #
 # Thresholds come from /etc/default/k3s-node-guard (templated by ansible).
 
