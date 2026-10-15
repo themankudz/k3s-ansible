@@ -26,8 +26,8 @@ console_loglevel: 3
 
 # k3s-node-guard: hourly timer that removes containerd leases older than
 # node_guard_lease_max_age_hours (leftovers of interrupted pulls -- containerd
-# has no config for lease expiry; complete images are never touched, so
-# Spegel's cache is unaffected) and, only when the root fs is at/over
+# has no config for lease expiry; complete images are never touched) and,
+# only when the root fs is at/over
 # node_guard_disk_pressure_pct, purges node_guard_purge_dirs and vacuums the
 # journal. It never prunes images: kubelet's image GC does that at 85%.
 # The threshold sits just under kubelet's soft eviction line (10% free).

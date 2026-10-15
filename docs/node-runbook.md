@@ -162,8 +162,8 @@ sleep 30                                                # GC runs after deletion
 ```
 
 Don't reach for `crictl rmi --prune` as a routine step: kubelet's image GC
-already removes unused images LRU-first above 85%, and the cached images are
-what Spegel serves to peers. The lease sweep only frees leftovers of
+already removes unused images LRU-first above 85%. The lease sweep only frees
+leftovers of
 interrupted pulls -- complete images are referenced and survive GC.
 
 Reclaimed 19G on w3 and 21G on w2 in one pass on 2026-09-18.

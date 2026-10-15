@@ -9,6 +9,9 @@ it is safe to keep in git. Keep this file in sync when the block changes.
 
 Last rolled out: 2026-10-15 (Phase 1 of `homelab-k3s/plans/retire-spegel-plan.md`:
 Spegel taken out of the pull path, `harbor-mgmt` added as fallback for `"*"`).
+**Pending:** the leftover `configs."localhost"` key was removed from both inventories
+on 2026-10-15 (Phase 3) but not rolled out; it lands, with a k3s restart on every node,
+on the next `upgrade-k3s.yml` run. Harmless until then.
 Before that: 2026-09-19 (Phase 4 of the Harbor HA mirror plan in
 `homelab-k3s/plans/archive/harbor-ha-mirror-and-otel-queue-bounding-plan.md`).
 
@@ -48,8 +51,7 @@ endpoint), except for `harbor.homecluster.co`, which has no upstream.
   (`IfNotPresent`), public images fall through to the real registry, and only
   Harbor-hosted images missing from a node can't be pulled.
 - `configs."*"` sets `insecure_skip_verify` for every endpoint, including
-  `harbor-mgmt.homecluster.co`. The `"localhost"` key is a Spegel leftover
-  (harmless; removed with the rest of Spegel).
+  `harbor-mgmt.homecluster.co`.
 
 ## Rollout
 
@@ -61,18 +63,19 @@ restarts k3s only on nodes whose registries actually changed). It is not
 node baseline. Management first, verify, then workload
 (`-e k3s_upgrade_drain=false` there — see the playbook header).
 
-**Management: k3s-8 can't be drained.** harbor-mgmt's `longhorn-local` volumes are
+**Management: k3s-8 is never drained.** harbor-mgmt's `longhorn-local` volumes are
 1-replica `strict-local` there, and Longhorn's `node-drain-policy`
-(`block-for-eviction-if-contains-last-replica`) holds its instance-manager PDB at 0. A
-drain cordons k3s-8, evicts harbor-mgmt (which can only run there), times out, and fails
-the run *before* the restart and the uncordon, leaving harbor-mgmt down (2026-10-15). So
-when a run will restart k3s-8, use `-e k3s_upgrade_drain=false` on management too:
-`KillMode=process` keeps every pod running through a k3s restart. If it happens anyway:
-`kubectl --context homelab uncordon k3s-8`, then re-run with drain off.
+(`block-for-eviction-if-contains-last-replica`) holds its instance-manager PDB at 0, so a
+drain can only evict harbor-mgmt (which can't run anywhere else) and time out. On
+2026-10-15 that failed the run before the restart and the uncordon, and harbor-mgmt was
+down ~15 min. k3s-8 now carries `k3s_upgrade_skip_drain=true` and `reboot_skip_drain=true`
+(`[k3s-8:vars]` in `inventory/homelab-cluster/hosts.ini`, gitignored), so both
+playbooks restart it without draining; `KillMode=process` keeps its pods running. If a
+drain ever leaves it cordoned: `kubectl --context homelab uncordon k3s-8`.
 
 ```bash
-ansible-playbook upgrade-k3s.yml -i inventory/homelab-cluster/hosts.ini --check -e k3s_upgrade_etcd_snapshot=false --skip-tags addons -e k3s_upgrade_drain=false
-ansible-playbook upgrade-k3s.yml -i inventory/homelab-cluster/hosts.ini --skip-tags addons -e k3s_upgrade_drain=false
+ansible-playbook upgrade-k3s.yml -i inventory/homelab-cluster/hosts.ini --check -e k3s_upgrade_etcd_snapshot=false --skip-tags addons
+ansible-playbook upgrade-k3s.yml -i inventory/homelab-cluster/hosts.ini --skip-tags addons
 ansible-playbook upgrade-k3s.yml -i inventory/workload-cluster/hosts.ini --check -e k3s_upgrade_etcd_snapshot=false --skip-tags addons -e k3s_upgrade_drain=false
 ansible-playbook upgrade-k3s.yml -i inventory/workload-cluster/hosts.ini --skip-tags addons -e k3s_upgrade_drain=false
 ```
@@ -148,7 +151,6 @@ custom_registries_yaml: |
     "docker.io":
     "ghcr.io":
     "quay.io":
-    "localhost":
     "*":
       tls:
         insecure_skip_verify: true
@@ -191,7 +193,6 @@ custom_registries_yaml: |
     "docker.io":
     "ghcr.io":
     "quay.io":
-    "localhost":
     "*":
       tls:
         insecure_skip_verify: true
