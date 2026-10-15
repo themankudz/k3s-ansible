@@ -4,8 +4,30 @@
 # outage (or restarting both Pi-holes at once) would otherwise make BOTH Harbors
 # unresolvable from every node at the same moment, even though both are up.
 # Live-node-safe: containerd and kubelet resolve per lookup, so no restart is
-# needed. Cloud-init doesn't manage /etc/hosts on these nodes (checked
-# 2026-10-12). Keep in step with homelab-k3s pihole/values.yaml.
+# needed. Keep in step with homelab-k3s pihole/values.yaml.
+#
+# The Ubuntu Pi image's cloud-init seed (/boot/firmware/user-data) sets
+# manage_etc_hosts: true, which rebuilds /etc/hosts from a template on every
+# boot. That silently dropped this block on k3s-1/6/7 when they rebooted on
+# 2026-10-12. The x86 nodes already had cloud-init disabled, so disable it
+# everywhere: the nodes are provisioned and Ansible owns their config now.
+# Takes effect at the next boot; nothing running is touched. /etc/hostname and
+# the last-rendered netplan (50-cloud-init.yaml) stay as they are.
+- name: Check whether cloud-init is installed
+  ansible.builtin.stat:
+    path: /etc/cloud
+  register: prereq_cloud_dir
+
+- name: Disable cloud-init so it stops rewriting /etc/hosts at boot
+  ansible.builtin.copy:
+    content: "Disabled by Ansible (prereq role, static-hosts.yml); node config is managed by Ansible.\n"
+    dest: /etc/cloud/cloud-init.disabled
+    owner: root
+    group: root
+    mode: "0644"
+    force: false   # leave an existing marker alone (the x86 nodes already have one)
+  when: prereq_cloud_dir.stat.exists
+
 - name: Pin static hostnames in /etc/hosts
   ansible.builtin.blockinfile:
     path: /etc/hosts
