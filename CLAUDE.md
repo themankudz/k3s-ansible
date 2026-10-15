@@ -48,6 +48,10 @@ ansible-playbook setup-custom-registries.yml -i inventory/homelab-cluster/hosts.
 # Destroy the cluster completely
 ansible-playbook reset.yml -i inventory/homelab-cluster/hosts.ini
 
+# Upgrade ALL apt packages (beyond unattended-upgrades' security origins),
+# one node at a time, no reboot — reports which hosts need one. Any inventory.
+ansible-playbook patch.yml -i inventory/homelab-cluster/hosts.ini
+
 # Reboot all cluster nodes
 ansible-playbook reboot.yml -i inventory/homelab-cluster/hosts.ini
 
@@ -174,6 +178,14 @@ writeup this playbook was built to prevent recurring.
 
 ### Node Topology
 
+**OS**: every k3s node in both clusters runs **Ubuntu** — including the
+Raspberry Pi 5s (not Raspberry Pi OS). Ubuntu-specific behaviour therefore
+applies fleet-wide: `/var/run/reboot-required` after kernel/firmware updates
+(what `patch.yml` reports), Ubuntu's `69-bcache.rules` (see
+`longhorn_node_fix`), and the `raspberrypi` role's `setup/Ubuntu.yml` path.
+
+#### homelab-cluster (a.k.a. the "management" cluster)
+
 **Control-Plane Nodes** (3 — all Pi5 NVMe, HA embedded etcd):
 | Node | IP | Hardware | Disk |
 |------|----|----------|------|
@@ -186,6 +198,18 @@ writeup this playbook was built to prevent recurring.
 |------|----|----------|------|-------|
 | k3s-8 | 192.168.50.179 | x86 host | Large (113G free) | Leaving cluster when migrated to Proxmox |
 
+#### workload-cluster
+
+3 x86 VMs on the Unraid host, all control-plane (HA embedded etcd) and all
+schedulable (`k3s_master_taint: false`, no agent nodes). Each has a dedicated
+`/dev/vdb` Longhorn disk.
+
+| Node | IP | Notes |
+|------|----|-------|
+| k3s-w1 | 192.168.50.81 | primary master |
+| k3s-w2 | 192.168.50.82 | |
+| k3s-w3 | 192.168.50.83 | |
+
 ### k3s Service Names (for manual intervention)
 - Masters: `k3s` (systemd unit: `k3s.service`)
 - Agents: `k3s-node` (systemd unit: `k3s-node.service`)
@@ -196,7 +220,7 @@ writeup this playbook was built to prevent recurring.
 
 | Role | Purpose |
 |------|---------|
-| **prereq** | System prerequisites: timezone (Europe/London), packages (open-iscsi, nfs-common), multipath config, kubelet config, apt proxy (192.168.50.220:3142). Split into `tasks/baseline.yml` (live-node-safe, no k3s restart) and `tasks/runtime-config.yml` (kubelet/containerd config — requires a restart, left to the caller); `tasks/main.yml` runs both in order for the bootstrap (`site.yml`) path. `baseline.yml` also includes `tasks/node-hygiene.yml` (tag `hygiene`): caps journald (`SystemMaxUse=500M`), stops/disables rsyslog and removes its files (journald already holds everything; an uncapped `/var/log/syslog` hit 4–7G/node in the 2026-09-17/18 outage), raises inotify limits (`fs.inotify.max_user_instances=1024`, `max_user_watches=1048576` — kernel defaults are exhausted on a busy node), pins `kernel.printk`'s console_loglevel to `3` (`console_loglevel`, `/etc/sysctl.d/90-k3s-console-loglevel.conf`) so `err`-level messages stay off the VM's emulated console while `emerg`/`alert`/`crit` still reach it — hygiene only, and nothing is lost from the ring buffer, journald or SigNoz. It is explicitly **not** a fix for k3s-w1's QXL video model spamming `failed to allocate VRAM BO` at ~690 msg/h since the 2026-09-17/18 incident (which has evicted every other message from that node's ring buffer — `dmesg` there is 100% qxl): tested 2026-09-19, the bursts continue every 15–16s at console_loglevel 3, so the trigger is periodic framebuffer access (fbcon + `agetty` on tty1), not the printing. The real fix is changing that VM's `<video model type='qxl'>` to `virtio` in Unraid (needs the VM stopped); the interim workaround is unbinding fbcon (`echo 0 > /sys/class/vtconsole/vtcon1/bind`), which also kills the VNC text console. keeps `fstrim.timer` enabled, sets `ForwardToSyslog=no` when rsyslog is disabled (otherwise journald logs "Forwarding to syslog missed N messages" forever), and optionally (`node_guard_enabled: true`, default off) installs the hourly `k3s-node-guard` timer that removes containerd leases older than 2h (leftovers of interrupted pulls; containerd has no lease-expiry setting; complete images are untouched so Spegel's cache survives) and purges disposable data (`node_guard_purge_dirs`, globs allowed — the k8s-infra otel-agent's queue emptyDir under `/var/lib/kubelet/pods`) only at 88% root usage, just before kubelet's soft eviction. It never prunes images — kubelet's image GC handles that at 85%. |
+| **prereq** | System prerequisites: timezone (Europe/London), packages (open-iscsi, nfs-common), multipath config, kubelet config, apt proxy (192.168.50.220:3142). Split into `tasks/baseline.yml` (live-node-safe, no k3s restart) and `tasks/runtime-config.yml` (kubelet/containerd config — requires a restart, left to the caller); `tasks/main.yml` runs both in order for the bootstrap (`site.yml`) path. `baseline.yml` also includes `tasks/node-hygiene.yml` (tag `hygiene`): caps journald (`SystemMaxUse=500M`), stops/disables rsyslog and removes its files (journald already holds everything; an uncapped `/var/log/syslog` hit 4–7G/node in the 2026-09-17/18 outage), raises inotify limits (`fs.inotify.max_user_instances=1024`, `max_user_watches=1048576` — kernel defaults are exhausted on a busy node), pins `kernel.printk`'s console_loglevel to `3` (`console_loglevel`, `/etc/sysctl.d/90-k3s-console-loglevel.conf`) so `err`-level messages stay off the VM's emulated console while `emerg`/`alert`/`crit` still reach it — hygiene only, and nothing is lost from the ring buffer, journald or SigNoz. It is explicitly **not** a fix for k3s-w1's QXL video model spamming `failed to allocate VRAM BO` at ~690 msg/h since the 2026-09-17/18 incident (which has evicted every other message from that node's ring buffer — `dmesg` there is 100% qxl): tested 2026-09-19, the bursts continue every 15–16s at console_loglevel 3, so the trigger is periodic framebuffer access (fbcon + `agetty` on tty1), not the printing. The real fix is changing that VM's `<video model type='qxl'>` to `virtio` in Unraid (needs the VM stopped); the interim workaround is unbinding fbcon (`echo 0 > /sys/class/vtconsole/vtcon1/bind`), which also kills the VNC text console. keeps `fstrim.timer` enabled, sets `ForwardToSyslog=no` when rsyslog is disabled (otherwise journald logs "Forwarding to syslog missed N messages" forever), and optionally (`node_guard_enabled: true`, default off; enabled in both cluster inventories) installs the hourly `k3s-node-guard` timer that removes containerd leases older than 2h (leftovers of interrupted pulls; containerd has no lease-expiry setting; complete images are untouched so Spegel's cache survives) and purges disposable data (`node_guard_purge_dirs`, globs allowed — the k8s-infra otel-agent's queue emptyDir under `/var/lib/kubelet/pods`) only at 88% root usage, just before kubelet's soft eviction. It never prunes images — kubelet's image GC handles that at 85%. |
 | **download** | Download and install k3s binary |
 | **raspberrypi** | Pi-specific boot config (cgroups, cmdline.txt) — Pi nodes only |
 | **k3s_custom_registries** | Configure Harbor registry mirrors with insecure TLS |
@@ -236,10 +260,12 @@ Deploys `/etc/udev/rules.d/60-longhorn-no-bcache.rules` on all nodes.
 
 ### Inventory
 
-Two active inventories:
+Two k3s cluster inventories:
 
-- `inventory/homelab-cluster/` — homelab cluster, 4 nodes: k3s-1/6/7 (Pi5, control-plane) + k3s-8 (x86 worker, temporary) (VIP: 192.168.50.200, pod CIDR: 10.52.0.0/16)
-- `inventory/workload-cluster/` — second cluster for heavier workloads (VIP: 192.168.50.201, pod CIDR: 10.53.0.0/16, dedicated `/dev/vdb` Longhorn disk and Unraid NFS mounts pre-configured)
+- `inventory/homelab-cluster/` — homelab ("management") cluster, 4 nodes: k3s-1/6/7 (Pi5, control-plane) + k3s-8 (x86 worker, temporary) (VIP: 192.168.50.200, pod CIDR: 10.52.0.0/16)
+- `inventory/workload-cluster/` — second cluster for heavier workloads, k3s-w1/2/3 (VIP: 192.168.50.201, pod CIDR: 10.53.0.0/16, dedicated `/dev/vdb` Longhorn disk). Node-level Unraid NFS mounts were decommissioned 2026-06-06 (workloads mount NFS natively in k8s now): `node_nfs_mounts: []` with `node_nfs_server` kept set so the role reconciles the old mounts away.
+
+Both are gitignored (`inventory/.gitignore` ignores everything except `sample/` and `infra/`). Two non-k3s inventories also exist: `inventory/infra/` (committed; `infra.yml`, secrets vaulted) and `inventory/hermes-agents/` (gitignored; `hermes.yml` provisions standalone Hermes Agent hosts via the `hermes_agent` role).
 
 ```
 inventory/<cluster>/
@@ -256,6 +282,7 @@ Deployed to `/data/k3s/kubelet.config` on all nodes, referenced via `--kubelet-a
 
 Current settings:
 - `shutdownGracePeriod: 75s` / `shutdownGracePeriodCriticalPods: 25s`
+- `serializeImagePulls: true` (one pull at a time per node, so a mass ArgoCD sync doesn't trip Harbor's upstream rate limits)
 - **Eviction hard**: memory < 300Mi, disk < 5%
 - **Eviction soft**: memory < 500Mi, disk < 10% (2m / 1m30s grace periods)
 

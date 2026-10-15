@@ -1,0 +1,51 @@
+---
+# Ad-hoc full package patching. Complements unattended-upgrades (which only
+# applies the security origins) by upgrading *every* installed apt package.
+#
+# Deliberately does NOT reboot — reboot k3s nodes with reboot.yml (serial,
+# drain + Longhorn-aware) afterwards. The final task reports which hosts
+# need one.
+#
+# k3s itself is a standalone binary, not an apt package, so this never
+# changes the k3s version — that stays with upgrade-k3s.yml.
+#
+# Usage (works with any inventory — k3s clusters, infra, hermes-agents):
+#   ansible-playbook patch.yml -i inventory/homelab-cluster/hosts.ini
+#   ansible-playbook patch.yml -i inventory/workload-cluster/hosts.ini --limit k3s-w1
+#   ansible-playbook patch.yml -i inventory/infra/hosts.ini -e patch_serial=0
+- name: Upgrade all installed packages (no reboot)
+  hosts: "{{ patch_hosts | default('all') }}"
+  gather_facts: true
+  become: true
+  # One node at a time by default: package upgrades can restart services
+  # (iscsid, multipathd, containerd-adjacent bits) that Longhorn depends on,
+  # so never bounce them on every node at once. -e patch_serial=0 runs all
+  # hosts in parallel for non-k3s inventories.
+  serial: "{{ patch_serial | default(1) }}"
+  vars:
+    # "dist" (= apt full-upgrade) so new kernels / changed dependencies are
+    # pulled in rather than held back. Use -e patch_upgrade_type=safe to
+    # never install or remove packages beyond the upgrade itself.
+    patch_upgrade_type: dist
+    patch_autoremove: true
+  tasks:
+    - name: Update the apt cache and upgrade all packages
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: "{{ patch_upgrade_type }}"
+        autoremove: "{{ patch_autoremove | bool }}"
+        autoclean: true
+        # unattended-upgrades may be holding the dpkg lock; wait it out.
+        lock_timeout: 600
+      register: patch_result
+
+    - name: Check whether a reboot is required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: patch_reboot_required
+
+    - name: Report patch result
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'Packages upgraded' if patch_result is changed else 'Already up to date' }};
+          {{ 'REBOOT REQUIRED' if patch_reboot_required.stat.exists else 'no reboot needed' }}
