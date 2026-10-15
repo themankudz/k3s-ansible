@@ -119,7 +119,7 @@ the Longhorn checks to do before taking a node down.
 
 `docs/registries.md` — the canonical, secret-free copy of the
 `custom_registries_yaml` block for both clusters (the inventories that hold it
-are gitignored), the Spegel → workload Harbor → `harbor-mgmt` endpoint order
+are gitignored), the workload Harbor ⇄ `harbor-mgmt` endpoint order
 and why, and the rollout/verify commands. Update it whenever the block changes.
 
 ### Fleet maintenance (`upgrade-k3s.yml`)
