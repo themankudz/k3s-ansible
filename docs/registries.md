@@ -7,45 +7,49 @@ is what `roles/k3s_custom_registries` writes (verbatim, via `blockinfile`) to
 no auth — every in-cluster pull is anonymous from public Harbor projects — so
 it is safe to keep in git. Keep this file in sync when the block changes.
 
-Last rolled out: 2026-09-19 (Phase 4 of the Harbor HA mirror plan in
-`homelab-k3s/plans/harbor-ha-mirror-and-otel-queue-bounding-plan.md`).
+Last rolled out: 2026-10-15 (Phase 1 of `homelab-k3s/plans/retire-spegel-plan.md`:
+Spegel taken out of the pull path, `harbor-mgmt` added as fallback for `"*"`).
+Before that: 2026-09-19 (Phase 4 of the Harbor HA mirror plan in
+`homelab-k3s/plans/archive/harbor-ha-mirror-and-otel-queue-bounding-plan.md`).
 
 ## How a pull resolves
 
 containerd tries the endpoints for a mirror **in order, per request**
-(manifest, config, every layer), falling through on a miss or error:
+(manifest, config, every layer), falling through on a miss or error. After the
+mirrors it still tries the real upstream registry (k3s keeps the default
+endpoint), except for `harbor.homecluster.co`, which has no upstream.
 
-| Image host | 1st | 2nd | 3rd |
-|---|---|---|---|
-| `harbor.homecluster.co` (management) | `harbor-mgmt` | `harbor` (workload) | Spegel |
-| `harbor.homecluster.co` (workload) | `harbor` (workload) | `harbor-mgmt` | Spegel |
-| `docker.io`, `ghcr.io`, `quay.io`, `registry.k8s.io`, `mcr.microsoft.com` | Spegel | workload Harbor `<x>_cache` | `harbor-mgmt` `<x>_cache` |
-| anything else (`"*"`) | Spegel | workload Harbor `docker_cache` | (containerd default: the real registry) |
+| Image host | 1st | 2nd |
+|---|---|---|
+| `harbor.homecluster.co` (management) | `harbor-mgmt` | `harbor` (workload) |
+| `harbor.homecluster.co` (workload) | `harbor` (workload) | `harbor-mgmt` |
+| `docker.io`, `ghcr.io`, `quay.io`, `registry.k8s.io`, `mcr.microsoft.com` | workload Harbor `<x>_cache` | `harbor-mgmt` `<x>_cache` |
+| anything else (`"*"`) | workload Harbor `docker_cache` | `harbor-mgmt` `docker_cache` |
 
-- **Spegel** (`http://localhost:30021`) is the in-cluster P2P layer cache. It never
-  pulls from anywhere: it only re-serves blobs that already exist in some node's
-  containerd store, and 404s fast otherwise. It runs `containerdMirrorAdd: false`
-  and mirrors `docker.io`, `ghcr.io`, `registry.k8s.io`, `harbor.homecluster.co`
-  (not `quay.io`/`mcr.microsoft.com` — those always miss straight through). On the
-  management cluster it runs only on Pi nodes, so on k3s-8 it always fails fast.
-- **Spegel stays first for the public registries** on purpose: anything already in
-  the cluster pulls node-to-node without touching Harbor/Longhorn/Unraid (the
-  2026-09-17 root cause), which is what gets nodes back quickly after an outage.
-  Verified 2026-09-19 that containerd's fall-through Spegel → Harbor works
-  (images landed in the workload `docker_cache` the moment k3s-8 pulled them on a
-  Spegel miss), so putting Harbor first would gain nothing and add Harbor
-  timeouts to every request exactly when Harbor is sick.
-- **Harbor is first for `harbor.homecluster.co`** because Spegel resolves a tag to
-  whatever digest *some peer* holds — it serves stale mutable tags (`:latest`,
-  or any re-pushed tag). The two Harbors replicate the hosted projects both ways
-  (`util-image`, `finplanner`, `gymbuddy`, `closet`), so either answers with the
-  same digests; each cluster prefers its local one. Spegel is the both-Harbors-
-  down fallback. Prefer immutable per-build tags (e.g. the commit SHA) anyway.
-- The mirror's proxy caches are the **third** endpoint everywhere (behind the
-  workload Harbor's warm LAN copy) because they are internet-backed over a
-  30 Mbit/s link.
+- **No Spegel.** The in-cluster P2P mirror (`http://localhost:30021`) used to be
+  first for the public registries and last for `harbor.homecluster.co`. It was
+  removed from every list on 2026-10-15: its hits only saved a LAN fetch from a
+  warm Harbor, its misses added a lookup to every pull, it served stale mutable
+  tags, and its both-Harbors-down fallback was never used. See the retire-Spegel
+  plan for the numbers.
+- **Each Harbor is the other's fallback.** They run in separate failure domains
+  (workload VMs on Unraid vs k3s-8), replicate the hosted projects both ways
+  (`util-image`, `finplanner`, `gymbuddy`, `closet`, so either answers with the
+  same digests), and carry proxy-cache projects with identical names. For
+  `harbor.homecluster.co` each cluster prefers its local Harbor.
+- **Both names resolve without DNS.** The `prereq` role pins
+  `harbor.homecluster.co` and `harbor-mgmt.homecluster.co` in `/etc/hosts`
+  (`static_hosts`), so a Pi-hole outage can't take out both endpoints at once.
+  It also disables cloud-init, which on the Pis rebuilt `/etc/hosts` at boot.
+- The mirror's proxy caches are the **second** endpoint for public registries
+  (behind the workload Harbor's warm LAN copy) because they are internet-backed
+  over a ~36 Mbit/s link.
+- **Both Harbors down:** images already on a node keep working
+  (`IfNotPresent`), public images fall through to the real registry, and only
+  Harbor-hosted images missing from a node can't be pulled.
 - `configs."*"` sets `insecure_skip_verify` for every endpoint, including
-  `harbor-mgmt.homecluster.co`.
+  `harbor-mgmt.homecluster.co`. The `"localhost"` key is a Spegel leftover
+  (harmless; removed with the rest of Spegel).
 
 ## Rollout
 
@@ -57,9 +61,18 @@ restarts k3s only on nodes whose registries actually changed). It is not
 node baseline. Management first, verify, then workload
 (`-e k3s_upgrade_drain=false` there — see the playbook header).
 
+**Management: k3s-8 can't be drained.** harbor-mgmt's `longhorn-local` volumes are
+1-replica `strict-local` there, and Longhorn's `node-drain-policy`
+(`block-for-eviction-if-contains-last-replica`) holds its instance-manager PDB at 0. A
+drain cordons k3s-8, evicts harbor-mgmt (which can only run there), times out, and fails
+the run *before* the restart and the uncordon, leaving harbor-mgmt down (2026-10-15). So
+when a run will restart k3s-8, use `-e k3s_upgrade_drain=false` on management too:
+`KillMode=process` keeps every pod running through a k3s restart. If it happens anyway:
+`kubectl --context homelab uncordon k3s-8`, then re-run with drain off.
+
 ```bash
-ansible-playbook upgrade-k3s.yml -i inventory/homelab-cluster/hosts.ini --check -e k3s_upgrade_etcd_snapshot=false --skip-tags addons
-ansible-playbook upgrade-k3s.yml -i inventory/homelab-cluster/hosts.ini --skip-tags addons
+ansible-playbook upgrade-k3s.yml -i inventory/homelab-cluster/hosts.ini --check -e k3s_upgrade_etcd_snapshot=false --skip-tags addons -e k3s_upgrade_drain=false
+ansible-playbook upgrade-k3s.yml -i inventory/homelab-cluster/hosts.ini --skip-tags addons -e k3s_upgrade_drain=false
 ansible-playbook upgrade-k3s.yml -i inventory/workload-cluster/hosts.ini --check -e k3s_upgrade_etcd_snapshot=false --skip-tags addons -e k3s_upgrade_drain=false
 ansible-playbook upgrade-k3s.yml -i inventory/workload-cluster/hosts.ini --skip-tags addons -e k3s_upgrade_drain=false
 ```
@@ -107,36 +120,30 @@ custom_registries_yaml: |
       endpoint:
         - "https://harbor-mgmt.homecluster.co"
         - "https://harbor.homecluster.co"
-        - "http://localhost:30021"
     docker.io:
       endpoint:
-        - "http://localhost:30021"
         - "https://harbor.homecluster.co/v2/docker_cache"
         - "https://harbor-mgmt.homecluster.co/v2/docker_cache"
     ghcr.io:
       endpoint:
-        - "http://localhost:30021"
         - "https://harbor.homecluster.co/v2/ghcr_cache"
         - "https://harbor-mgmt.homecluster.co/v2/ghcr_cache"
     quay.io:
       endpoint:
-        - "http://localhost:30021"
         - "https://harbor.homecluster.co/v2/quay_cache"
         - "https://harbor-mgmt.homecluster.co/v2/quay_cache"
     registry.k8s.io:
       endpoint:
-        - "http://localhost:30021"
         - "https://harbor.homecluster.co/v2/k8s_cache"
         - "https://harbor-mgmt.homecluster.co/v2/k8s_cache"
     mcr.microsoft.com:
       endpoint:
-        - "http://localhost:30021"
         - "https://harbor.homecluster.co/v2/mcr_cache"
         - "https://harbor-mgmt.homecluster.co/v2/mcr_cache"
     "*":
       endpoint:
-        - "http://localhost:30021"
         - "https://harbor.homecluster.co/v2/docker_cache"
+        - "https://harbor-mgmt.homecluster.co/v2/docker_cache"
   configs:
     "docker.io":
     "ghcr.io":
@@ -149,13 +156,43 @@ custom_registries_yaml: |
 
 ## Workload cluster — `inventory/workload-cluster/group_vars/all.yml`
 
-Identical to the management block except the `harbor.homecluster.co` entry,
-which prefers the local (workload) Harbor:
-
 ```yaml
+custom_registries_yaml: |
+  mirrors:
     harbor.homecluster.co:
       endpoint:
         - "https://harbor.homecluster.co"
         - "https://harbor-mgmt.homecluster.co"
-        - "http://localhost:30021"
+    docker.io:
+      endpoint:
+        - "https://harbor.homecluster.co/v2/docker_cache"
+        - "https://harbor-mgmt.homecluster.co/v2/docker_cache"
+    ghcr.io:
+      endpoint:
+        - "https://harbor.homecluster.co/v2/ghcr_cache"
+        - "https://harbor-mgmt.homecluster.co/v2/ghcr_cache"
+    quay.io:
+      endpoint:
+        - "https://harbor.homecluster.co/v2/quay_cache"
+        - "https://harbor-mgmt.homecluster.co/v2/quay_cache"
+    registry.k8s.io:
+      endpoint:
+        - "https://harbor.homecluster.co/v2/k8s_cache"
+        - "https://harbor-mgmt.homecluster.co/v2/k8s_cache"
+    mcr.microsoft.com:
+      endpoint:
+        - "https://harbor.homecluster.co/v2/mcr_cache"
+        - "https://harbor-mgmt.homecluster.co/v2/mcr_cache"
+    "*":
+      endpoint:
+        - "https://harbor.homecluster.co/v2/docker_cache"
+        - "https://harbor-mgmt.homecluster.co/v2/docker_cache"
+  configs:
+    "docker.io":
+    "ghcr.io":
+    "quay.io":
+    "localhost":
+    "*":
+      tls:
+        insecure_skip_verify: true
 ```
