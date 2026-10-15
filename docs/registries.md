@@ -7,11 +7,12 @@ is what `roles/k3s_custom_registries` writes (verbatim, via `blockinfile`) to
 no auth — every in-cluster pull is anonymous from public Harbor projects — so
 it is safe to keep in git. Keep this file in sync when the block changes.
 
-Last rolled out: 2026-10-15 (Phase 1 of `homelab-k3s/plans/retire-spegel-plan.md`:
+Last rolled out: 2026-10-15 (Phase 1 of `homelab-k3s/plans/archive/retire-spegel-plan.md`:
 Spegel taken out of the pull path, `harbor-mgmt` added as fallback for `"*"`).
 **Pending:** the leftover `configs."localhost"` key was removed from both inventories
 on 2026-10-15 (Phase 3) but not rolled out; it lands, with a k3s restart on every node,
-on the next `upgrade-k3s.yml` run. Harmless until then.
+on the next `upgrade-k3s.yml` run. Harmless until then. Once a run has rolled it out,
+update "Last rolled out" above and delete this note.
 Before that: 2026-09-19 (Phase 4 of the Harbor HA mirror plan in
 `homelab-k3s/plans/archive/harbor-ha-mirror-and-otel-queue-bounding-plan.md`).
 
