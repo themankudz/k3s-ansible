@@ -55,6 +55,9 @@ ansible-playbook patch.yml -i inventory/homelab-cluster/hosts.ini
 # Reboot all cluster nodes
 ansible-playbook reboot.yml -i inventory/homelab-cluster/hosts.ini
 
+# Read-only cluster health check (after a reboot/upgrade). Exit 0 ok / 1 warn / 2 fail.
+./cluster-health.sh            # homelab; pass "workload" for the other cluster, --no-ssh to skip node OS checks
+
 # Restore from backup
 ansible-playbook k3s_restore_from_backup.yaml -i inventory/homelab-cluster/hosts.ini
 ```
