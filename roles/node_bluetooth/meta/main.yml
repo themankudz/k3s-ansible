@@ -1,0 +1,15 @@
+---
+argument_specs:
+  main:
+    short_description: Host Bluetooth stack (BlueZ) for BLE workloads
+    options:
+      node_bluetooth_enabled:
+        description: Install and configure BlueZ on this node. False skips the role.
+        type: bool
+      node_bluetooth_packages:
+        description: Packages to install.
+        type: list
+        elements: str
+      node_bluetooth_experimental:
+        description: Enable BlueZ's experimental D-Bus interfaces (bluetoothd --experimental).
+        type: bool

@@ -1,0 +1,220 @@
+---
+# Join a NEW k3s agent to an ALREADY-ESTABLISHED cluster.
+#
+# There was no playbook for this: site.yml is fresh-bootstrap-only (it stops
+# k3s on every master at once -- the 2026-09-05 outage) and is not safe even
+# with --limit (its agent unit falls back to the inventory k3s_token, which only
+# the k3s_server role replaces with the live one). upgrade-k3s.yml can't do it
+# either: its preflight requires every inventory host to already be a node,
+# and its agent play only restarts k3s-node, never enables it.
+#
+# This playbook only ever touches the hosts named in --limit, which must be in
+# the `node` group, not `master`, and not yet cluster nodes (a rerun after a
+# successful join fails the preflight instead of re-joining). Masters are only
+# read from: the kubectl context check and the join token.
+#
+# Steps on the new host: the same baseline as every routine run
+# (tasks/reconcile-node.yml, which also renders the k3s-node unit) -> handlers
+# flushed (the Pi cgroup cmdline change reboots the node here, before k3s ever
+# starts) -> k3s binary -> k3s_agent (enable + start) -> wait for Ready and
+# check the taints/labels from extra_agent_args.
+#
+# Once joined, upgrade-k3s.yml maintains the node like any other agent.
+#
+# Usage (never --diff: the rendered unit carries the join token):
+#   ansible-playbook join-agent.yml -i inventory/<cluster>/hosts.ini --limit <new-host> --check
+#   ansible-playbook join-agent.yml -i inventory/<cluster>/hosts.ini --limit <new-host>
+
+- name: Preflight checks for joining a new agent
+  hosts: node
+  gather_facts: true
+  become: false
+  any_errors_fatal: true
+  vars:
+    join_agent_primary_master: "{{ groups[group_name_master | default('primary-master')][0] }}"
+  tasks:
+    - name: Assert the run is limited to the new host(s)
+      ansible.builtin.assert:
+        that: ansible_limit is defined and (ansible_limit | length) > 0
+        fail_msg: >-
+          Refusing to run without --limit: this playbook joins new agents and
+          must never touch the agents already in the cluster. Re-run with
+          --limit <new-host>.
+      run_once: true
+
+    - name: Assert the target is an agent, not a master
+      ansible.builtin.assert:
+        that: inventory_hostname not in groups['master']
+        fail_msg: >-
+          {{ inventory_hostname }} is in the master group. join-agent.yml only
+          joins agents; a new server needs an etcd member join, which this
+          playbook does not do.
+
+    - name: Get node names via the local kubectl context
+      ansible.builtin.command:
+        cmd: kubectl --context {{ kubectl_context }} get nodes -o name
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+      check_mode: false
+      register: join_agent_ctx_node_names
+
+    - name: Get node names via k3s kubectl on the primary master
+      ansible.builtin.command:
+        cmd: "{{ k3s_kubectl_binary | default('k3s kubectl') }} get nodes -o name"
+      delegate_to: "{{ join_agent_primary_master }}"
+      become: true
+      run_once: true
+      changed_when: false
+      check_mode: false
+      register: join_agent_incluster_node_names
+
+    - name: Assert the local kubectl context points at this same cluster
+      ansible.builtin.assert:
+        that: >-
+          (join_agent_ctx_node_names.stdout_lines | sort)
+          == (join_agent_incluster_node_names.stdout_lines | sort)
+        fail_msg: >-
+          kubectl context '{{ kubectl_context }}' sees a different node set
+          than k3s kubectl on {{ join_agent_primary_master }} does. You are
+          pointed at the wrong cluster locally -- fix ~/.kube/config first.
+      run_once: true
+
+    - name: Assert the target is not already a cluster node
+      ansible.builtin.assert:
+        that: ('node/' ~ ansible_facts['hostname']) not in join_agent_incluster_node_names.stdout_lines
+        fail_msg: >-
+          {{ ansible_facts['hostname'] }} is already a node in this cluster.
+          Use upgrade-k3s.yml to converge it; join-agent.yml only joins new
+          agents.
+
+    # A kubelet may run behind the API servers, never ahead. If k3s_version was
+    # bumped in group_vars but upgrade-k3s.yml hasn't rolled it out yet, the new
+    # agent would join newer than the control plane.
+    - name: Read the kubelet version of every control-plane node
+      ansible.builtin.command:
+        cmd: >-
+          {{ k3s_kubectl_binary | default('k3s kubectl') }} get nodes
+          -l node-role.kubernetes.io/control-plane=true
+          -o jsonpath='{range .items[*]}{.metadata.name}={.status.nodeInfo.kubeletVersion}{"\n"}{end}'
+      delegate_to: "{{ join_agent_primary_master }}"
+      become: true
+      run_once: true
+      changed_when: false
+      check_mode: false
+      register: join_agent_master_versions
+
+    - name: Assert the control plane already runs k3s_version
+      ansible.builtin.assert:
+        that:
+          - join_agent_master_versions.stdout_lines | length > 0
+          - >-
+            join_agent_master_versions.stdout_lines | map('regex_replace', '^[^=]*=', '')
+            | reject('equalto', k3s_version) | list | length == 0
+        fail_msg: >-
+          k3s_version is {{ k3s_version }} but the control plane reports
+          {{ join_agent_master_versions.stdout_lines }}. Roll the version out
+          with upgrade-k3s.yml first (or set k3s_version back) -- the new agent
+          must not be newer than the API servers.
+      run_once: true
+
+- name: Join the new agent
+  hosts: node
+  gather_facts: false
+  become: true
+  serial: 1
+  any_errors_fatal: true
+  vars:
+    join_agent_primary_master: "{{ groups[group_name_master | default('primary-master')][0] }}"
+  environment: "{{ proxy_env | default({}) }}"
+  tasks:
+    # Same file and the same host the agent unit template reads the token from
+    # (hostvars[groups[group_name_master][0]]['token']) -- see upgrade-k3s.yml's
+    # token play for why it must be the primary master. delegate_to works
+    # regardless of --limit.
+    - name: Read node-token from the primary master
+      ansible.builtin.slurp:
+        src: /var/lib/rancher/k3s/server/node-token
+      delegate_to: "{{ join_agent_primary_master }}"
+      run_once: true
+      no_log: true
+      register: join_agent_node_token
+
+    - name: Store the join token on the primary master's hostvars
+      ansible.builtin.set_fact:
+        token: "{{ join_agent_node_token.content | b64decode | regex_replace('\n', '') }}"
+      delegate_to: "{{ join_agent_primary_master }}"
+      delegate_facts: true
+      run_once: true
+      no_log: true
+
+    - name: Apply the node baseline and render the k3s agent unit
+      ansible.builtin.include_tasks: tasks/reconcile-node.yml
+      vars:
+        reconcile_node_service_template: roles/k3s_agent/templates/k3s.service.j2
+        reconcile_node_service_dest: "{{ systemd_dir }}/k3s-node.service"
+        reconcile_node_service_mode: "0755"
+
+    # The raspberrypi role's cgroup cmdline change reboots the node; do that
+    # (and the journald restart) before k3s starts for the first time.
+    - name: Run baseline handlers before k3s starts
+      ansible.builtin.meta: flush_handlers
+
+    - name: Install the k3s binary
+      ansible.builtin.include_role:
+        name: download
+
+    - name: Enable and start k3s-node
+      ansible.builtin.include_role:
+        name: k3s_agent
+
+    - name: Wait for the node to register and report Ready
+      ansible.builtin.command:
+        cmd: >-
+          {{ k3s_kubectl_binary | default('k3s kubectl') }}
+          get node {{ ansible_facts['hostname'] }}
+          -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+      delegate_to: "{{ join_agent_primary_master }}"
+      changed_when: false
+      register: join_agent_ready
+      until: join_agent_ready.rc == 0 and join_agent_ready.stdout == 'True'
+      retries: 30
+      delay: 10
+      when: not ansible_check_mode
+
+    - name: Read the node's taints and labels
+      ansible.builtin.command:
+        cmd: >-
+          {{ k3s_kubectl_binary | default('k3s kubectl') }}
+          get node {{ ansible_facts['hostname'] }} -o json
+      delegate_to: "{{ join_agent_primary_master }}"
+      changed_when: false
+      register: join_agent_node
+      when: not ansible_check_mode
+
+    - name: Assert the taints and labels from extra_agent_args are on the node
+      ansible.builtin.assert:
+        that:
+          - join_agent_expected_taints | difference(join_agent_taints.split()) | length == 0
+          - join_agent_expected_labels | difference(join_agent_labels.split()) | length == 0
+        fail_msg: >-
+          Missing taints {{ join_agent_expected_taints | difference(join_agent_taints.split()) }}
+          or labels {{ join_agent_expected_labels | difference(join_agent_labels.split()) }}.
+          Node labels/taints from k3s flags are only applied when the node
+          first registers.
+        success_msg: >-
+          taints {{ join_agent_expected_taints }}, labels {{ join_agent_expected_labels }}
+      vars:
+        join_agent_node_obj: "{{ join_agent_node.stdout | from_json }}"
+        join_agent_expected_taints: "{{ extra_agent_args | regex_findall('--node-taint[= ](\\S+)') }}"
+        join_agent_expected_labels: "{{ extra_agent_args | regex_findall('--node-label[= ](\\S+)') }}"
+        # Same "key=value:Effect" / "key=value" shapes as the k3s flags.
+        join_agent_taints: >-
+          {%- for t in join_agent_node_obj.spec.taints | default([]) -%}
+          {{ t.key }}{{ ('=' ~ t.value) if t.value | default('') else '' }}:{{ t.effect }}
+          {% endfor -%}
+        join_agent_labels: >-
+          {%- for k, v in join_agent_node_obj.metadata.labels.items() -%}
+          {{ k }}={{ v }}
+          {% endfor -%}
+      when: not ansible_check_mode

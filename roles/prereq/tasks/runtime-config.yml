@@ -17,3 +17,35 @@
     dest: /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
     backup: true
   register: prereq_containerd_config
+
+# k3s runs kubelet with --config-dir=/var/lib/rancher/k3s/agent/etc/kubelet.conf.d
+# (00-k3s-defaults.conf, then 10-cli-config.conf from the file above); a later
+# file overrides an earlier one. Per-node settings go in their own drop-in so
+# the shared kubelet.config stays identical on every node.
+- name: Create the kubelet drop-in config directory
+  ansible.builtin.file:
+    path: /var/lib/rancher/k3s/agent/etc/kubelet.conf.d
+    state: directory
+    mode: "0700"
+  when: node_sd_card
+
+- name: Add SD-card container-log rotation kubelet drop-in
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible (prereq role, node_sd_card). Pod logs are on a small
+      # tmpfs on this node -- keep each container's logs small.
+      apiVersion: kubelet.config.k8s.io/v1beta1
+      kind: KubeletConfiguration
+      containerLogMaxSize: {{ node_sd_card_container_log_max_size }}
+      containerLogMaxFiles: {{ node_sd_card_container_log_max_files }}
+    dest: /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/50-sd-card-logs.conf
+    mode: "0600"
+  register: prereq_kubelet_dropin
+  when: node_sd_card
+
+- name: Remove SD-card kubelet drop-in when not wanted
+  ansible.builtin.file:
+    path: /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/50-sd-card-logs.conf
+    state: absent
+  register: prereq_kubelet_dropin_removed
+  when: not node_sd_card

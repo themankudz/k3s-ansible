@@ -33,6 +33,11 @@ node_monitoring_hostmetrics_enabled: true
 
 # journald: empty list = every unit. On k3s nodes scope it, k3s is chatty.
 node_monitoring_journald_units: []
+# Journal directory to read (journalctl --directory reads only that one).
+# Nodes with journald Storage=volatile (prereq's node_sd_card) only have the
+# runtime journal in /run/log/journal.
+node_monitoring_journald_directory: >-
+  {{ '/run/log/journal' if node_sd_card | default(false) | bool else '/var/log/journal' }}
 # Minimum priority to collect (emerg..debug).
 node_monitoring_journald_priority: info
 # Also collect kernel messages (OOM kills, I/O errors, filesystem trouble).

@@ -59,6 +59,9 @@
     - role: node_nfs
       become: true
       tags: node_nfs
+    - role: node_bluetooth
+      become: true
+      tags: node_bluetooth
     - role: mail_relay
       become: true
       when: mail_relay_enabled | default(true) | bool

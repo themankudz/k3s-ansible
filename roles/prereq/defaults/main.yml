@@ -24,6 +24,24 @@ inotify_max_user_watches: 1048576
 # for that is changing the VM's <video model type='qxl'> to virtio in Unraid.
 console_loglevel: 3
 
+# --- SD-card nodes (node_sd_card: true) --------------------------------------
+# Keep logs in RAM so they don't wear out an SD card; SigNoz holds the history
+# (node_monitoring switches its journald receivers to /run/log/journal when
+# node_sd_card is set; the k8s-infra otel-agent reads /var/log/pods). A reboot
+# while SigNoz is unreachable loses that window's node logs -- accepted. Turning this off again leaves the tmpfs
+# fstab line and the mount in place; remove them by hand and reboot.
+node_sd_card: false
+# journald Storage=volatile: the journal lives in /run only.
+journald_runtime_max_use: 64M
+journald_runtime_max_file_size: 16M
+# tmpfs for /var/log/pods. Only the logs actually written use RAM; with the
+# rotation below that is ~10Mi per container at most.
+node_sd_card_pod_logs_size: 256M
+# kubelet container-log rotation for SD-card nodes only (kubelet drop-in,
+# needs a k3s restart -- tasks/runtime-config.yml).
+node_sd_card_container_log_max_size: 5Mi
+node_sd_card_container_log_max_files: 2
+
 # k3s-node-guard: hourly timer that removes containerd leases older than
 # node_guard_lease_max_age_hours (leftovers of interrupted pulls -- containerd
 # has no config for lease expiry; complete images are never touched) and,

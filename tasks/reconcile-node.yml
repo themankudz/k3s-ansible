@@ -62,6 +62,12 @@
   ansible.builtin.include_role:
     name: node_nfs
 
+# Host BlueZ for BLE workloads; a no-op unless node_bluetooth_enabled. Never
+# touches k3s, so it never feeds k3s_upgrade_needs_restart.
+- name: Reconcile the host Bluetooth stack
+  ansible.builtin.include_role:
+    name: node_bluetooth
+
 # Neither mail_relay nor unattended_upgrades touches anything k3s reads, so
 # neither feeds k3s_upgrade_needs_restart below — deliberately.
 - name: Reconcile the mail relay

@@ -1,0 +1,58 @@
+---
+# Live-node-safe: never touches k3s, so it never feeds a k3s restart.
+
+- name: Install BlueZ
+  ansible.builtin.apt:
+    name: "{{ node_bluetooth_packages }}"
+    state: present
+  register: node_bluetooth_install
+  when: node_bluetooth_enabled
+
+# main.conf's Experimental setting is the config-file form of
+# bluetoothd --experimental, so no ExecStart override (whose bluetoothd path
+# differs between Ubuntu releases) is needed.
+- name: Set BlueZ experimental interfaces
+  ansible.builtin.lineinfile:
+    path: /etc/bluetooth/main.conf
+    regexp: '^#?\s*Experimental\s*='
+    line: "Experimental = {{ node_bluetooth_experimental | ternary('true', 'false') }}"
+    insertafter: '^\[General\]'
+  notify: Restart bluetooth
+  # In check mode on a node without BlueZ yet, main.conf doesn't exist.
+  when:
+    - node_bluetooth_enabled
+    - not (ansible_check_mode and node_bluetooth_install is changed)
+
+- name: Enable and start the bluetooth service
+  ansible.builtin.systemd:
+    name: bluetooth
+    enabled: true
+    state: started
+  when:
+    - node_bluetooth_enabled
+    - not (ansible_check_mode and node_bluetooth_install is changed)
+
+# systemd-rfkill saves the block state at shutdown and restores it at boot,
+# so unblocking once is enough to survive reboots.
+- name: Find soft-blocked Bluetooth radios
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      for d in /sys/class/rfkill/rfkill*; do
+        [ -e "$d/type" ] || continue
+        if [ "$(cat "$d/type")" = bluetooth ] && [ "$(cat "$d/soft")" = 1 ]; then
+          basename "$d"
+        fi
+      done
+    executable: /bin/bash
+  register: node_bluetooth_blocked
+  changed_when: false
+  check_mode: false
+  when: node_bluetooth_enabled
+
+- name: Unblock Bluetooth radios
+  ansible.builtin.command: rfkill unblock bluetooth
+  changed_when: true
+  when:
+    - node_bluetooth_enabled
+    - node_bluetooth_blocked.stdout | length > 0

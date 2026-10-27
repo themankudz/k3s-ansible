@@ -9,7 +9,8 @@
 # Checks: API /readyz (incl. etcd), nodes (Ready, cordoned, pressure, version
 # skew), workload controllers (deploy/sts/ds fully ready), bad pods
 # (CrashLoop/ImagePull/Pending), leftover Failed pods, PVCs, LoadBalancer IPs
-# (MetalLB), Longhorn (nodes, volume robustness, CSI driver registered on every
+# (MetalLB; on homelab also a warning for any Cluster-policy LB), Longhorn
+# (nodes, volume robustness, CSI driver registered on every
 # node), ArgoCD app health/sync, recently failed Jobs. With SSH (default, user
 # k3s): k3s service, failed systemd units, NTP sync, root disk, iscsid,
 # reboot-required, uptime.
@@ -178,6 +179,17 @@ bad=$(kjson svc -A | jq -r '.items[] | select(.spec.type=="LoadBalancer")
 nlb=$(kjson svc -A | jq '[.items[] | select(.spec.type=="LoadBalancer")] | length')
 if [ -z "$bad" ]; then ok "all $nlb LoadBalancer services have an external IP (MetalLB)"
 else fail "LoadBalancer services without an external IP"; detail "$bad"; fi
+
+# Management only: the kitchen agent k3s-9 runs a MetalLB speaker but only
+# kitchen pods. In L2 mode a Cluster-policy Service can be announced from any
+# speaker node -- including k3s-9 -- so every management LB must be Local.
+if [ "$CONTEXT" = "homelab" ]; then
+  bad=$(kjson svc -A | jq -r '.items[] | select(.spec.type=="LoadBalancer")
+    | select((.spec.externalTrafficPolicy // "Cluster") == "Cluster")
+    | "\(.metadata.namespace)/\(.metadata.name)"')
+  if [ -z "$bad" ]; then ok "all LoadBalancer services use externalTrafficPolicy Local"
+  else warn "LoadBalancer services with externalTrafficPolicy Cluster (may be announced from the kitchen node)"; detail "$bad"; fi
+fi
 
 # --- Longhorn ---------------------------------------------------------------
 LH_NODES=$(kjson nodes.longhorn.io -n longhorn-system)

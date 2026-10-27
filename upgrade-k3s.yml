@@ -498,6 +498,8 @@
           {{
             k3s_upgrade_current_version.stdout != k3s_version
             or prereq_kubelet_config is changed
+            or prereq_kubelet_dropin is changed
+            or prereq_kubelet_dropin_removed is changed
             or prereq_containerd_config is changed
             or k3s_upgrade_service_file is changed
             or (k3s_custom_registries_file is defined and k3s_custom_registries_file is changed)
@@ -713,6 +715,8 @@
           {{
             k3s_upgrade_current_version.stdout != k3s_version
             or prereq_kubelet_config is changed
+            or prereq_kubelet_dropin is changed
+            or prereq_kubelet_dropin_removed is changed
             or prereq_containerd_config is changed
             or k3s_upgrade_service_file is changed
             or (k3s_custom_registries_file is defined and k3s_custom_registries_file is changed)

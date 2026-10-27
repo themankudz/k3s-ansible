@@ -26,6 +26,11 @@ metal_lb_enabled: true
 metal_lb_controller_tag_version: v0.16.0
 metal_lb_speaker_tag_version: v0.16.0
 metal_lb_type: native
+# Extra tolerations for the MetalLB speaker DaemonSet (Kubernetes toleration
+# objects), written into the downloaded manifest by tasks/metallb.yml so every
+# k3s apply of it -- including the one at each k3s start -- keeps them.
+# Empty = upstream manifest as-is.
+metal_lb_speaker_extra_tolerations: []
 
 # Shared retry/delay for remote manifest and asset downloads. The CI runner's
 # resolver intermittently times out on GitHub-hosted domains (helm.cilium.io,

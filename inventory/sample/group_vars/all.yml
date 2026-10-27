@@ -143,6 +143,15 @@ metal_lb_ip_range: "192.168.30.80-192.168.30.90"
 #   - eth1
 #   - eth2
 
+# (optional) extra tolerations for the MetalLB speaker DaemonSet, written into
+# the downloaded manifest on every MetalLB deploy -- e.g. so a tainted node can
+# announce its own Local-policy LoadBalancer IPs.
+# metal_lb_speaker_extra_tolerations:
+#   - effect: NoSchedule
+#     key: location
+#     operator: Equal
+#     value: kitchen
+
 # Only enable if your nodes are proxmox LXC nodes, make sure to configure your proxmox nodes
 # in your hosts.ini file.
 # Please read https://gist.github.com/triangletodd/02f595cd4c0dc9aac5f7763ca2264185 before using this.

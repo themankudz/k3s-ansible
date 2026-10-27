@@ -66,7 +66,7 @@ receivers:
               action: keep
 {% endif %}
   journald:
-    directory: /var/log/journal
+    directory: {{ node_monitoring_journald_directory }}
     priority: {{ node_monitoring_journald_priority }}
 {% if node_monitoring_journald_units | length > 0 %}
     units:
@@ -80,7 +80,7 @@ receivers:
   # `journalctl --dmesg`, whose _TRANSPORT=kernel match is ANDed with any
   # --unit matches -- combined in one receiver the stream is empty.
   journald/kernel:
-    directory: /var/log/journal
+    directory: {{ node_monitoring_journald_directory }}
     priority: {{ node_monitoring_journald_priority }}
     dmesg: true
 {{ journald_operators() }}

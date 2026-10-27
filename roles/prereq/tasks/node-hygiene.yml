@@ -19,6 +19,40 @@
     mode: "0644"
   notify: Restart journald
 
+# --- SD-card nodes: pod logs on a tmpfs (the journal is handled by the
+# template above). Mounting over /var/log/pods hides the files of containers
+# that are already running, so on a node that already has pod logs only the
+# fstab line is written and the tmpfs takes over at the next reboot.
+- name: Check for existing pod logs
+  ansible.builtin.find:
+    paths: /var/log/pods
+    file_type: any
+  register: prereq_pod_logs
+  when: node_sd_card
+
+- name: Keep pod logs on a tmpfs
+  ansible.posix.mount:
+    path: /var/log/pods
+    src: tmpfs
+    fstype: tmpfs
+    opts: "size={{ node_sd_card_pod_logs_size }},mode=0755,nosuid,nodev,noexec"
+    state: "{{ 'mounted' if prereq_pod_logs_on_tmpfs | bool or prereq_pod_logs.matched == 0 else 'present' }}"
+  vars:
+    prereq_pod_logs_on_tmpfs: >-
+      {{ ansible_facts['mounts'] | selectattr('mount', 'equalto', '/var/log/pods') | list | length > 0 }}
+  register: prereq_pod_logs_mount
+  when: node_sd_card
+
+- name: Note that the pod-log tmpfs waits for a reboot
+  ansible.builtin.debug:
+    msg: >-
+      /var/log/pods already holds pod logs, so the tmpfs was only added to
+      fstab; it takes over at the next reboot (reboot.yml).
+  when:
+    - node_sd_card
+    - prereq_pod_logs_mount.changed
+    - prereq_pod_logs.matched > 0
+
 # --- rsyslog: journald already holds everything; rsyslog only duplicates it
 # into an uncapped text file. k3s/containerd/kubelet log to the journal, and
 # the SigNoz k8s-infra agent reads /var/log/pods, so nothing consumes syslog.

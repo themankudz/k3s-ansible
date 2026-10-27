@@ -276,11 +276,14 @@ See the commands [here](https://technotim.com/posts/k3s-etcd-ansible/#testing-yo
 | `k3s_server_post` | `metal_lb_bgp_my_asn` | string | `~` | Not required | BGP ASN configurations |
 | `k3s_server_post` | `metal_lb_bgp_peer_asn` | string | `~` | Not required | BGP peer ASN configurations |
 | `k3s_server_post` | `metal_lb_bgp_peer_address` | string | `~` | Not required | BGP peer address |
+| `k3s_server` | `metal_lb_speaker_extra_tolerations` | list | `[]` | Not required | Extra tolerations for the MetalLB speaker DaemonSet (e.g. so a tainted node can announce its own `Local` LoadBalancer IPs), written into the downloaded manifest on every MetalLB deploy so k3s's own re-apply keeps them |
 | `lxc` | `custom_reboot_command` | string | `~` | Not required | Command to run on reboot |
 | `reboot` (playbook) | `concurrent_reboots` | int/string | `100%` | Not required | Number (or percentage) of nodes to reboot at a time for a staggered reboot |
 | `reboot` (playbook) | `wait_seconds_after_reboot` | int | `0` | Not required | Pause in seconds between staggered reboot batches |
 | `prereq` | `system_timezone` | string | `null` | Not required | Timezone to be set on all nodes |
 | `prereq` | `disable_swap` | bool | `true` | Not required | Disable swap on all cluster nodes (swapoff + comment out /etc/fstab swap entries), all-or-nothing |
+| `prereq` | `node_sd_card` | bool | `false` | Not required | SD-card node: journald `Storage=volatile` (`journald_runtime_max_use`), `/var/log/pods` on a tmpfs (`node_sd_card_pod_logs_size`), and a kubelet drop-in with small container-log rotation (`node_sd_card_container_log_max_size`/`_files`). Logs live in RAM; ship them off-node |
+| `node_bluetooth` | `node_bluetooth_enabled` | bool | `false` | Not required | Install BlueZ (`node_bluetooth_packages`), enable its experimental D-Bus interfaces (`node_bluetooth_experimental`) and unblock the Bluetooth radio, for BLE workloads such as a Bluetooth proxy |
 | `mail_relay` | `mail_relay_enabled` | bool | `true` | Not required | Whether `site.yml`/`upgrade-k3s.yml` configure the postfix mail relay (`mail_relay` role) as part of the shared node baseline |
 | `mail_relay` | `mail_hostname` | string | `example.com` | Not required | Domain emails are sent from; used to build the postfix mailname |
 | `mail_relay` | `smtp_sasl_auth_enable` | string | `"yes"` | Not required | Enable SASL authentication to the relay |

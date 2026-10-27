@@ -19,6 +19,8 @@ argument_specs:
         description: Collect host metrics. Disable on k3s nodes (k8s-infra already does).
       node_monitoring_journald_units:
         description: systemd units to collect from the journal. Empty list collects everything.
+      node_monitoring_journald_directory:
+        description: Journal directory the journald receivers read (/run/log/journal for a volatile journal).
       node_monitoring_journald_priority:
         description: Minimum journal priority to collect (emerg..debug).
       node_monitoring_journald_dmesg:

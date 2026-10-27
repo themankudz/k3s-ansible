@@ -33,6 +33,28 @@
     label: "{{ item.change }} => {{ item.to }}"
   when: ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
 
+# Extra speaker tolerations go into the manifest file itself, not a kubectl
+# patch: k3s re-applies every file in server/manifests at each start (seen in
+# k3s-7's journal), which would reset a patched DaemonSet. They are inserted
+# after the speaker's upstream control-plane toleration (the only one in the
+# file since at least v0.14) between marker comments, so a re-run, a changed
+# list or an empty list rewrites exactly that block -- and a freshly
+# downloaded manifest simply gets it again.
+- name: Set extra MetalLB speaker tolerations in the manifest
+  ansible.builtin.replace:
+    path: /var/lib/rancher/k3s/server/manifests/metallb-crds.yaml
+    regexp: >-
+      ^(        key: node-role\.kubernetes\.io/control-plane\n        operator: Exists\n)(?:      # BEGIN
+      metal_lb_speaker_extra_tolerations\n(?:.*\n)*?      # END metal_lb_speaker_extra_tolerations\n)?
+    replace: "\\g<1>{{ metallb_speaker_tolerations_block }}"
+  vars:
+    metallb_speaker_tolerations_block: >-
+      {{ ('      # BEGIN metal_lb_speaker_extra_tolerations\n'
+          ~ (metal_lb_speaker_extra_tolerations | to_nice_yaml(indent=2) | indent(6, true))
+          ~ '      # END metal_lb_speaker_extra_tolerations\n')
+         if metal_lb_speaker_extra_tolerations | length > 0 else '' }}
+  when: ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
+
 - name: Read back MetalLB manifest from first master
   ansible.builtin.slurp:
     src: /var/lib/rancher/k3s/server/manifests/metallb-crds.yaml
@@ -58,3 +80,16 @@
   when:
     - ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
     - not metallb_manifest_has_speaker_tag
+
+- name: Fail if the extra MetalLB speaker tolerations were not written to the manifest
+  ansible.builtin.fail:
+    msg: >-
+      metal_lb_speaker_extra_tolerations is set, but the manifest has no
+      "# BEGIN metal_lb_speaker_extra_tolerations" block: the speaker's
+      upstream control-plane toleration (the anchor) was not found. The
+      upstream manifest layout may have changed.
+  when:
+    - ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
+    - metal_lb_speaker_extra_tolerations | length > 0
+    - not ansible_check_mode
+    - "'# BEGIN metal_lb_speaker_extra_tolerations' not in (metallb_manifest.content | default('') | b64decode)"

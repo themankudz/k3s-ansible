@@ -1,0 +1,11 @@
+---
+# Host Bluetooth stack for nodes that run a BLE workload (e.g. the kitchen
+# node's bt-proxy, which talks to BlueZ over /var/run/dbus). Off by default:
+# the role is a no-op unless node_bluetooth_enabled is true.
+node_bluetooth_enabled: false
+node_bluetooth_packages:
+  - bluez
+  - rfkill
+# BlueZ experimental D-Bus interfaces (same as bluetoothd --experimental);
+# bt-proxy needs them for passive scanning.
+node_bluetooth_experimental: true

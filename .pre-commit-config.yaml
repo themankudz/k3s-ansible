@@ -133,6 +133,15 @@ repos:
           - PyYAML
         pass_filenames: false
         files: ^roles/k3s_server_post/tasks/metallb\.yml$|^\.github/scripts/test-metallb-namespace\.py$
+      - id: metallb-speaker-tolerations-test
+        name: MetalLB speaker tolerations test
+        entry: python3 .github/scripts/test-metallb-speaker-tolerations.py
+        language: python
+        additional_dependencies:
+          - Jinja2>=3.1
+          - PyYAML
+        pass_filenames: false
+        files: ^roles/k3s_server/tasks/metallb\.yml$|^\.github/scripts/test-metallb-speaker-tolerations\.py$ # noqa yaml[line-length]
       - id: metallb-deploy-condition-test
         name: MetalLB deploy condition test
         entry: python3 .github/scripts/test-metallb-deploy-condition.py
