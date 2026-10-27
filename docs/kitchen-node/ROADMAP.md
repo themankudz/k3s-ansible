@@ -1,6 +1,6 @@
 # Kitchen node (k3s-9): join a tainted, SD-card Pi 4 to the management cluster
 
-> **Status:** IN PROGRESS. Phase 1 done 2026-10-27 (roles, `join-agent.yml`, inventory group — no node touched); Phase 2 next. k3s-9 is booted at `192.168.50.90`. (checked 2026-10-27)
+> **Status:** IN PROGRESS. Phase 1 done and validated 2026-10-27 (roles, `join-agent.yml`, inventory group — no node touched); Phase 2 next. k3s-9 is booted at `192.168.50.90`. (checked 2026-10-27)
 
 ## Why
 
@@ -154,6 +154,12 @@ Docs only: this ROADMAP, `HANDOFF.md`, `docs/INDEX.md` row.
       the real k3s-9 via a scratch inventory: 0 failures.
 - **Done when:** lint + molecule green, `join-agent.yml` passes `--syntax-check`, nothing applied to
   any live node, and `upgrade-k3s.yml --check` still passes its preflight (no `k3s-9` in inventory yet).
+- **Validated 2026-10-27:** `upgrade-k3s.yml --check --tags always` against homelab — all preflight
+  assertions pass (incl. "every inventory host maps to a node" with the empty `pi-kitchen` group),
+  `changed=0` everywhere. `pre-commit run --all-files` (pinned hooks): every hook touching Phase 1
+  code passes, incl. the new tolerations test and baseline parity; the failing hooks (ansible-lint 35,
+  yamllint, shellcheck, whitespace fixers, k3s bootstrap test) fail identically on `3081dc6`, the
+  commit before Phase 1 — Mop-up rows 3–5. Molecule not run (no Vagrant here); accepted.
 
 ### Phase 2 — flash, join and verify k3s-9
 - [ ] Flash Ubuntu Server 24.04 arm64 with Raspberry Pi Imager (hostname `k3s-9`, user `k3s`, SSH key);
@@ -194,4 +200,6 @@ reproduces and have the user confirm the list.
 |---|---|---|---|---|
 | 1 | Phase 0 review, 2026-10-27 | `site.yml` | Nothing stops `site.yml` from running against an already-established cluster (the 2026-09-05 outage); only docs warn. | Add a guard play first: fail if any master already has `/var/lib/rancher/k3s/server/db` or the VIP's `/readyz` answers. Not needed for k3s-9 (joins via `join-agent.yml`), so not this plan's job — fix here or split into its own plan. |
 | 2 | Phase 1, 2026-10-27 | `roles/k3s_server/tasks/metallb.yml` | The upstream manifest is fetched with `get_url` and no `force:`, so once `/var/lib/rancher/k3s/server/manifests/metallb-crds.yaml` exists it is never re-downloaded — a `metal_lb_controller_tag_version` bump may not reach the cluster (and the speaker-tag check would then fail). Not reproduced; the upgrade-k3s.yml header says the opposite. | Suspected from reading the task. Check against the 2026-09-06 v0.15.3 → v0.16.0 bump before touching it. |
-| 3 | Phase 1, 2026-10-27 | local lint tooling | `pre-commit` isn't installed on this machine, and the local `ansible-lint` (26.4, ansible-core 2.21) reports 40 pre-existing `production`-profile failures that the pinned v6.22.2 hook may not; yamllint flags the gitignored inventories and the vendored `.ansible/collections` copy. | Phase 1 kept the count at 40 (no new failures). Decide which version is the source of truth. |
+| 3 | Phase 1, 2026-10-27 | lint (whole repo) | `pre-commit run --all-files` isn't green: pinned ansible-lint v6.22.2 reports 35 `production`-profile failures (local 26.4 reports 40); yamllint errors in `pre-reqs.yml`, `k3s_restore_from_backup.yaml`, `inventory/sample/group_vars/all.yml`. Identical on `3081dc6`. | Pre-existing; Phase 1 added none. `pre-commit` now installed (`~/.local/bin`). |
+| 4 | Phase 1, 2026-10-27 | `.github/scripts/test-k3s-server-bootstrap.sh` | Fails: still greps `roles/k3s_server/tasks/main.yml` for `map('extract', hostvars, 'ansible_hostname')`. | Broken since `7f37374` switched to `ansible_facts['hostname']`; the test wasn't updated. Fails on `3081dc6` too. |
+| 5 | Phase 1, 2026-10-27 | whitespace + `cluster-health.sh` | pre-commit fixers rewrite `k3s_restore_from_backup.yaml`, `pre-reqs.yml`, `roles/prereq/files/multipath.conf`, `roles/prereq/templates/apt-proxy`, `sudoers-k3s-root` (tabs/EOF/trailing spaces — reverted, not committed); shellcheck SC2086/SC2046/SC2116 in `cluster-health.sh` (version-skew lines, Longhorn CSI line). | Pre-existing (`dde9230` for the script). Check `apt-proxy`/`multipath.conf`/sudoers rendering before letting the fixers change them. |
