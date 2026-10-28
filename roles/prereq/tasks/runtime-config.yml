@@ -8,6 +8,7 @@
   ansible.builtin.copy:
     src: kubelet.config
     dest: /data/k3s/kubelet.config
+    mode: "0644"
     backup: true
   register: prereq_kubelet_config
 
@@ -15,6 +16,7 @@
   ansible.builtin.copy:
     src: containerd-config.toml.tmpl
     dest: /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
+    mode: "0644"
     backup: true
   register: prereq_containerd_config
 

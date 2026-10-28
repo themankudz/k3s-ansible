@@ -183,17 +183,17 @@ proxmox_lxc_ct_ids:
 mail_hostname: mydomainname.com
 
 # Enable Authentication to your relay
-smtp_sasl_auth_enable: yes
+smtp_sasl_auth_enable: "yes"
 
 # Relay Host
 smtp_relayhost: email_relay_host.com
 
 # SMTP Server credentials
 smtp_servers:
-   - host:  smtp_server1
-     key: smtp_server_user:smtpserver1_api_key
-   - host:  smtp_server1
-     key: smtp_server_user2:smtpserver2_api_key
+  - host: smtp_server1
+    key: smtp_server_user:smtpserver1_api_key
+  - host: smtp_server1
+    key: smtp_server_user2:smtpserver2_api_key
 
 # Unattended Upgrades configuration see '/etc/apt/apt.conf.d/50unattended-upgrades'
 # Notification email - 'Unattended-Upgrade::Mail'

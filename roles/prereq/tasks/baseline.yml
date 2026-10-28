@@ -13,6 +13,7 @@
   ansible.builtin.template:
     src: apt-proxy
     dest: /etc/apt/apt.conf.d/00aptproxy
+    mode: "0644"
   tags: apt-cacher
   when: ansible_facts['os_family'] == "Debian" and (apt_proxy_http_url is defined)
 
@@ -195,6 +196,7 @@
   ansible.builtin.copy:
     src: multipath.conf
     dest: /etc/multipath.conf
+    mode: "0644"
     backup: true
   notify: Restart multipathd
   tags: longhorn

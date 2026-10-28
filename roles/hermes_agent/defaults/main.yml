@@ -150,8 +150,10 @@ hermes_hass_mcp_url: "http://192.168.50.210:8123/api/mcp"   # Pi-reachable; /api
 # pull_requests,context") to cut prompt bloat; empty = GitHub's default set.
 hermes_github_mcp_enabled: true
 hermes_github_mcp_url: "https://api.githubcopilot.com/mcp/"
-hermes_github_mcp_readonly: true    # send X-MCP-Readonly:true → no mutating tools (push/merge/comment). Flip false to allow writes.
-hermes_github_mcp_toolsets: ""      # optional CSV → X-MCP-Toolsets (e.g. "repos,issues,pull_requests,context"); empty = server default.
+# send X-MCP-Readonly:true → no mutating tools (push/merge/comment). Flip false to allow writes.
+hermes_github_mcp_readonly: true
+# optional CSV → X-MCP-Toolsets (e.g. "repos,issues,pull_requests,context"); empty = server default.
+hermes_github_mcp_toolsets: ""
 
 # Agent identity + standing behaviour. SOUL.md becomes slot #1 of the system
 # prompt (replaces Hermes' DEFAULT_AGENT_IDENTITY; 20k char cap, security
@@ -180,7 +182,8 @@ hermes_soul_force: false          # NEVER overwrite an existing SOUL.md. Set tru
 hermes_delegation_heavy_enabled: false
 hermes_heavy_provider: ""               # empty = inherit top-level provider (ollama) for a LOCAL heavy tier.
                                         # Set to "openai" for a CLOUD endpoint, else Hermes injects an Ollama-style
-                                        # `options` block the real OpenAI API 400s on (proven 2026-06-28). See config.yaml.j2.
+                                        # `options` block the real OpenAI API 400s on (proven 2026-06-28).
+                                        # See config.yaml.j2.
 hermes_heavy_api_mode: ""               # wire format override (chat_completions|codex_responses|anthropic_messages|
                                         # bedrock_converse). EMPTY = Hermes auto-detects. Set codex_responses for
                                         # OpenAI gpt-5/reasoning (Responses API → max_output_tokens, not max_tokens).
@@ -211,7 +214,8 @@ hermes_heavy_api_key: "ollama"          # Ollama ignores it, but the OpenAI-comp
 # Leave OFF until Honcho is deployed AND the JWT is vaulted. The plugin fails open
 # (Hermes keeps running on SQLite if Honcho is unreachable), but keep it clean.
 hermes_honcho_enabled: false
-hermes_honcho_base_url: "https://honcho-api.homecluster.co"   # raw API host (the openconcho UI owns honcho.homecluster.co); non-local → JWT required
+# raw API host (the openconcho UI owns honcho.homecluster.co); non-local → JWT required
+hermes_honcho_base_url: "https://honcho-api.homecluster.co"
 hermes_honcho_workspace: "hermes"   # Honcho workspace ID; defaults to the "hermes" host key. MUST match the JWT scope.
 hermes_honcho_peer_name: "kudz"     # your user peer (no env/default fallback → must be set here)
 hermes_honcho_ai_peer: "hermes"     # agent peer; defaults to the "hermes" host key
@@ -226,7 +230,9 @@ hermes_telegram_allowed_users: ""   # NON-secret. Comma-separated Telegram user 
 hermes_honcho_api_key: ""     # workspace-scoped Honcho JWT (see Honcho block above). Written to .env as HONCHO_API_KEY.
 hermes_perplexity_api_key: ""
 hermes_openai_api_key: ""     # OpenAI key for the CLOUD heavy/delegation tier (D9). Written to .env as
-                              # OPENAI_API_KEY; config.yaml references it as ${OPENAI_API_KEY} (never inlined into the 0644 file).
+                              # OPENAI_API_KEY; config.yaml references it as ${OPENAI_API_KEY}
+                              # (never inlined into the 0644 file).
 hermes_n8n_api_key: ""        # n8n: Settings → API. Enables hermes_n8n_enabled wiring.
 hermes_hass_mcp_token: ""     # HA long-lived access token (Profile → Security). /api/mcp needs it.
-hermes_github_mcp_token: ""   # GitHub PAT (fine-grained, least-priv) for the hosted GitHub MCP. Written to .env as GITHUB_MCP_TOKEN.
+# GitHub PAT (fine-grained, least-priv) for the hosted GitHub MCP. Written to .env as GITHUB_MCP_TOKEN.
+hermes_github_mcp_token: ""

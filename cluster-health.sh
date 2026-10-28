@@ -93,7 +93,7 @@ trap 'rm -f "${TMPDIR:-/tmp}/cluster-health-nodes.$$"' EXIT
 
 versions=""
 while IFS='|' read -r name ready cordon version pressure ip role; do
-  versions="$versions $version"
+  versions+="$version"$'\n'
   if [ "$ready" != "True" ]; then fail "$name ($ip) NotReady (Ready=$ready)"; continue; fi
   msg="$name ($ip, $role) Ready, $version"
   if [ "$cordon" = "cordoned" ]; then warn "$msg — still CORDONED (kubectl uncordon $name)"
@@ -101,8 +101,9 @@ while IFS='|' read -r name ready cordon version pressure ip role; do
   else ok "$msg"
   fi
 done <"${TMPDIR:-/tmp}/cluster-health-nodes.$$"
-nver=$(printf '%s\n' $versions | sort -u | wc -l | tr -d ' ')
-[ "$nver" -gt 1 ] && warn "kubelet version skew across nodes:$(printf ' %s' $(printf '%s\n' $versions | sort -u))"
+uniq_versions=$(printf '%s' "$versions" | sort -u)
+nver=$(printf '%s\n' "$uniq_versions" | grep -c .)
+[ "$nver" -gt 1 ] && warn "kubelet version skew across nodes: $(printf '%s\n' "$uniq_versions" | paste -sd' ' -)"
 
 # --- Workload controllers ---------------------------------------------------
 section "Workloads"
@@ -213,7 +214,7 @@ if [ "$(printf '%s' "$LH_NODES" | jq '.items | length')" -gt 0 ]; then
     | select(.metadata.name as $n | $lh | index($n))
     | select([.spec.drivers[]?.name] | index("driver.longhorn.io") | not) | .metadata.name')
   if [ -z "$missing" ]; then ok "Longhorn CSI driver registered on every Longhorn node"
-  else fail "Longhorn CSI driver NOT registered on: $(echo $missing)"; fi
+  else fail "Longhorn CSI driver NOT registered on: ${missing//$'\n'/ }"; fi
 
   VOLS=$(kjson volumes.longhorn.io -n longhorn-system)
   summary=$(printf '%s' "$VOLS" | jq -r '[.items[] | "\(.status.state)/\(.status.robustness)"]

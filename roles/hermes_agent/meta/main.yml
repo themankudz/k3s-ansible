@@ -48,10 +48,14 @@ argument_specs:
         description: Telegram bot token (vault this); written to .env only when set.
       hermes_honcho_enabled:
         default: false
-        description: Enable the Honcho memory provider (templates honcho.json + sets memory.provider in config.yaml). Swaps Hermes off its built-in SQLite store.
+        description: >-
+          Enable the Honcho memory provider (templates honcho.json + sets memory.provider in config.yaml).
+          Swaps Hermes off its built-in SQLite store.
       hermes_honcho_base_url:
         default: https://honcho-api.homecluster.co
-        description: Base URL of the self-hosted Honcho API (the openconcho UI owns honcho.homecluster.co). Non-secret; written to honcho.json.
+        description: >-
+          Base URL of the self-hosted Honcho API (the openconcho UI owns honcho.homecluster.co).
+          Non-secret; written to honcho.json.
       hermes_honcho_workspace:
         default: hermes
         description: Honcho workspace ID. Must match the scope of the minted JWT (generate_jwt.py --workspace).

@@ -8,6 +8,10 @@ repos:
       - id: detect-private-key
       - id: check-merge-conflict
       - id: end-of-file-fixer
+        # Deployed byte-for-byte to every node (template keeps trailing
+        # newlines too): adding one rewrites the file fleet-wide, and for
+        # multipath.conf fires 'Restart multipathd'.
+        exclude: ^roles/prereq/(files/multipath\.conf|templates/apt-proxy)$
       - id: mixed-line-ending
       - id: trailing-whitespace
         args: [--markdown-linebreak-ext=md]
