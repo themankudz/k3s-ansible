@@ -10,7 +10,7 @@
     owner: root
     group: root
     mode: "0644"
-  when: ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
+  when: inventory_hostname == k3s_server_addon_master
 
 - name: Copy kube-vip RBAC manifest to first master
   ansible.builtin.template:
@@ -19,7 +19,7 @@
     owner: root
     group: root
     mode: "0644"
-  when: ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
+  when: inventory_hostname == k3s_server_addon_master
 
 - name: Copy vip manifest to first master
   ansible.builtin.template:
@@ -28,4 +28,9 @@
     owner: root
     group: root
     mode: "0644"
-  when: ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
+  when: inventory_hostname == k3s_server_addon_master
+
+- name: Keep the kube-vip manifests on the primary master only
+  ansible.builtin.include_tasks: primary-only-manifests.yml
+  vars:
+    k3s_server_primary_only_manifests: [vip-rbac.yaml, vip.yaml]

@@ -1,6 +1,6 @@
 # Kitchen node (k3s-9): join a tainted, SD-card Pi 4 to the management cluster
 
-> **Status:** IN PROGRESS. Phase 1 done and validated 2026-10-27 (roles, `join-agent.yml`, inventory group — no node touched); Phase 2 next. k3s-9 is booted at `192.168.50.90`. (checked 2026-10-27)
+> **Status:** IN PROGRESS. Phase 2 done 2026-10-28: k3s-9 joined (Ready, tainted, BLE + RAM logs verified), MetalLB speaker on k3s-9. Open: confirm the toleration after the next k3s-7 restart, bt-proxy IP (homelab-k3s P2). Phase 3 (Mop-up) next. (checked 2026-10-28)
 
 ## Why
 
@@ -161,36 +161,41 @@ Docs only: this ROADMAP, `HANDOFF.md`, `docs/INDEX.md` row.
   yamllint, shellcheck, whitespace fixers, k3s bootstrap test) fail identically on `3081dc6`, the
   commit before Phase 1 — Mop-up rows 3–5. Molecule not run (no Vagrant here); accepted.
 
-### Phase 2 — flash, join and verify k3s-9
-- [ ] Flash Ubuntu Server 24.04 arm64 with Raspberry Pi Imager (hostname `k3s-9`, user `k3s`, SSH key);
-      DHCP reservation for a fixed IP; wired to the kitchen Ethernet port (Wi-Fi left unconfigured).
-- [ ] Add `[k3s-9]` / `192.168.50.90` to `inventory/homelab-cluster/hosts.ini` and `k3s-9` under
-      `[pi-kitchen:children]` (the per-node group pattern the other hosts use) — only
-      now, right before the join (see Phase 1). From here until the join succeeds, don't run
-      `upgrade-k3s.yml`.
-- [ ] Dry-run `ansible-playbook join-agent.yml -i inventory/homelab-cluster/hosts.ini --limit k3s-9
-      --check` (**never `--diff`** — the agent unit/env carries the token), then run it for real.
-      Never `site.yml`, with or without `--limit`.
-- [ ] Check: node Ready, taint and labels present, no Longhorn disk, otel-agent pod running
-      and its logs visible in SigNoz (`k8s.node.name = k3s-9`), `log.source = node` journald logs
-      arriving, `bluetoothctl show` lists a powered controller, `/var/log/pods` is tmpfs,
-      `journalctl --header` shows a runtime journal only, and kubelet really picked up the drop-in:
-      `kubectl get --raw /api/v1/nodes/k3s-9/proxy/configz | jq .kubeletconfig.containerLogMaxSize`
-      → `"5Mi"` (k3s must not prune unknown files in `kubelet.conf.d` — unverified until now);
-      `hci0` exists (`bluetoothctl list`) — if not, the Pi 4's UART radio may also need Ubuntu's
-      `pi-bluetooth` package (add it to `node_bluetooth_packages` in `pi-kitchen.yml`); SigNoz shows
-      `log.source = node` logs from k3s-9 (node_monitoring reads `/run/log/journal` there).
-- [ ] **Precondition:** homelab-k3s has switched the three `Cluster` Services to `Local` and
-      `cluster-health.sh` reports no `Cluster` LoadBalancers on management.
-- [ ] Roll out the MetalLB change (addon-only `upgrade-k3s.yml` run, as in CLAUDE.md). Check:
-      speaker pod Running on k3s-9; no existing LoadBalancer IP moved to k3s-9 (ARP table from
-      another host: none of them resolve to k3s-9's MAC); the bt-proxy LoadBalancer IP (once
-      deployed) resolves to k3s-9. After the next primary-master k3s restart, confirm the speaker
-      DaemonSet still has the kitchen toleration (it's in the manifest, so k3s's re-apply keeps it).
-- [ ] Confirm `upgrade-k3s.yml` preflight (`every inventory host maps to a node`, agent play) and
-      `reboot.yml` handle k3s-9; run `cluster-health.sh`.
-- [ ] Update `CLAUDE.md` Node Topology (+ inventory description) with k3s-9.
-- **Done when:** all checks above pass and the cluster health script is green.
+### Phase 2 — flash, join and verify k3s-9 ✅ 2026-10-28
+- [x] Flash Ubuntu Server 24.04 arm64 (hostname `k3s-9`, user `k3s`, SSH key); fixed IP `192.168.50.90`; wired.
+- [x] `[k3s-9]` / `192.168.50.90` in `inventory/homelab-cluster/hosts.ini`, `k3s-9` under `[pi-kitchen:children]`.
+- [x] `join-agent.yml --limit k3s-9 --check` (no `--diff`), then for real. Never `site.yml`.
+- [x] Checks: node Ready (`v1.36.4+k3s1`); taint `location=kitchen:NoSchedule`, labels `location=kitchen`,
+      `create-default-disk=false`; no Longhorn node object; otel-agent + smartctl-exporter Running; SigNoz has
+      `k8s.node.name = k3s-9` pod logs and `log.source = node` journald logs (k3s-node, kernel, ssh);
+      `hci0` powered, `Experimental = true`, not rfkill-blocked (**no `pi-bluetooth` needed**); `/var/log/pods`
+      is a 256M tmpfs; journald writes `/run/log/journal` only; `configz` → `containerLogMaxSize "5Mi"`,
+      `containerLogMaxFiles 2` (**k3s keeps foreign files in `kubelet.conf.d`**).
+- [x] Precondition: every management LoadBalancer is `Local` (14/14, 2026-10-28).
+- [x] MetalLB rollout (`upgrade-k3s.yml --tags addons`): speaker tolerates `location=kitchen` and runs on
+      k3s-9; no existing LB IP resolves to k3s-9's MAC (ARP check of all 13 IPs).
+- [ ] After the next k3s-7 k3s restart, confirm the speaker DaemonSet still has the kitchen toleration
+      (it's in k3s-7's manifest; k3s-1's copy is `.skip`ped). The bt-proxy IP check waits for homelab-k3s P2.
+- [x] `upgrade-k3s.yml` preflight passes with k3s-9; agent play `--check` → k3s-9 `changed=0`; `reboot.yml`
+      includes it (`serial: 1`); `cluster-health.sh` has no FAIL (2 WARNs not k3s-9: Mop-up 9, 12).
+- [x] `CLAUDE.md` Node Topology + inventory description.
+- **Done:**
+  - **k3s-9's image had no `noble-updates`/`noble-backports`** in `ubuntu.sources` (but shipped `-updates`
+    packages), so `apt install acl` failed. `prereq` baseline now adds the pockets to a main stanza that lists only
+    the release suite (no-op on every other node). Then the apt-cacher served a spliced `noble-updates/InRelease`
+    (`BADSIG` fleet-wide) — Mop-up 6; root-cause fix `VfileUseRangeOps=-1` pushed in homelab-k3s.
+  - **`node_monitoring` failed on a not-yet-k3s node**: the traverse ACL on `agent/containerd`, which k3s creates
+    at first start. The role now skips missing dirs; `join-agent.yml` re-runs it once the node is Ready.
+    `join-agent.yml --check` can't get past "Manage k3s service" (no unit yet) — expected.
+  - **Addon manifests went to a random master.** `groups['master']` has no stable order (k3s-7 is in
+    `primary-master` and `pi-master`; ansible-core 2.21 put k3s-1 or k3s-7 first), and the k3s_server role
+    default `group_name_master: master` made the "first master" `groups['master'][0]`. k3s-1 had held identical
+    MetalLB/kube-vip manifests since 2026-09-06 and re-applied them at every start — it would have undone the
+    toleration (and any future version bump). Now `k3s_server_addon_master` (first of `primary-master`) and
+    `tasks/primary-only-manifests.yml` (`<file>.skip` on other masters, removed on the primary — k3s v1.36.4
+    `pkg/deploy` ignores skipped files, deletes nothing). k3s-1 has the 3 `.skip` files. Test
+    `test-addon-master.py`. Workload: only k3s-w1 holds them, no strays.
+  - `cluster-health.sh` checks the Longhorn CSI driver and iscsid only on Longhorn nodes.
 
 ### Phase 3 — Mop-up
 Issues found along the way that weren't their phase's job. Before starting: re-check each row still
@@ -203,3 +208,10 @@ reproduces and have the user confirm the list.
 | 3 | Phase 1, 2026-10-27 | lint (whole repo) | `pre-commit run --all-files` isn't green: pinned ansible-lint v6.22.2 reports 35 `production`-profile failures (local 26.4 reports 40); yamllint errors in `pre-reqs.yml`, `k3s_restore_from_backup.yaml`, `inventory/sample/group_vars/all.yml`. Identical on `3081dc6`. | Pre-existing; Phase 1 added none. `pre-commit` now installed (`~/.local/bin`). |
 | 4 | Phase 1, 2026-10-27 | `.github/scripts/test-k3s-server-bootstrap.sh` | Fails: still greps `roles/k3s_server/tasks/main.yml` for `map('extract', hostvars, 'ansible_hostname')`. | Broken since `7f37374` switched to `ansible_facts['hostname']`; the test wasn't updated. Fails on `3081dc6` too. |
 | 5 | Phase 1, 2026-10-27 | whitespace + `cluster-health.sh` | pre-commit fixers rewrite `k3s_restore_from_backup.yaml`, `pre-reqs.yml`, `roles/prereq/files/multipath.conf`, `roles/prereq/templates/apt-proxy`, `sudoers-k3s-root` (tabs/EOF/trailing spaces — reverted, not committed); shellcheck SC2086/SC2046/SC2116 in `cluster-health.sh` (version-skew lines, Longhorn CSI line). | Pre-existing (`dde9230` for the script). Check `apt-proxy`/`multipath.conf`/sudoers rendering before letting the fixers change them. |
+| 6 | Phase 2, 2026-10-28 | apt-cacher-ng (homelab-k3s `apt-cacher`) | Served a spliced `noble-updates/InRelease` (same size as upstream, same `Date`, wrong hashes from line 328 on, `BADSIG` on every node — k3s-7 too); cached copy written 07:56, after the 03:20 daily index purge. Third time (2026-09-18, 09-19). Fixed for now by deleting the cached file + `.head`. | Root cause per the purge CronJob's own comment: a range/resumed fetch of a volatile file from a mirror pool (`ports.ubuntu.com` backends) that changed between requests. apt-cacher-ng's `VfileUseRangeOps` (default `1`) is exactly that path; set `VfileUseRangeOps: -1` (whole-file fetch for volatile files). Belongs in homelab-k3s; image is `sameersbn/apt-cacher-ng:latest` (3.7.4) — pin it too. 2026-10-28: Deployment arg `VfileUseRangeOps=-1` pushed in homelab-k3s and rolled out (daemon runs with it; proxied InRelease = upstream for noble/-updates/-security). Follow-up: if no `BADSIG` by ~end of Nov, drop the CronJob's index-purge half (keep the `.deb` purge). |
+| 7 | Phase 2, 2026-10-28 | `roles/k3s_server/defaults/main.yml` (`server_init_args`), `tasks/main.yml` (cluster-init), `k3s_server_post/tasks/{cilium,calico}.yml` | Still use `groups[group_name_master][0]` (= `groups['master'][0]`, unstable order — see Phase 2) to pick the `--cluster-init` master and the cilium/calico manifest master. | Bootstrap-only (`site.yml`) / unused CNIs, so no live effect; a fresh bootstrap could init on a random master. Switch to `k3s_server_addon_master` (or a shared `k3s_primary_master`). |
+| 8 | Phase 2, 2026-10-28 | MetalLB speakers (all 5) | `http: TLS handshake error from 192.168.50.97: client sent an HTTP request to an HTTPS server` every ~30s on every speaker. | Pre-existing (old speakers too). Probably a scraper hitting the speaker's HTTPS metrics port over HTTP (k8s-infra/SigNoz on k3s-7?). |
+| 9 | Phase 2, 2026-10-28 | k3s-8 | `upgrade-k3s.yml --check --tags agents`: k3s-8 has pending changes (k3s-node-guard script, `registries.yaml`, traverse ACL on `agent/containerd`) → **the next run restarts k3s-node on k3s-8**. `cluster-health.sh` also warns: failed `systemd-networkd-wait-online.service`. | Repo changes not yet rolled to k3s-8 since its last run. Not k3s-9's job; plan a run (k3s-8 is never drained). |
+| 10 | Phase 2, 2026-10-28 | k3s-9 `/var/log/journal` | 5 persistent journal files (~40 MB) from before `Storage=volatile` stay on the SD card; never rotated or read again (journalctl still lists them). | Harmless. `node_sd_card` could remove `/var/log/journal` once volatile. |
+| 11 | Phase 2, 2026-10-28 | `roles/k3s_server/tasks/metallb.yml` | `Download to first master` reports `changed` in `--check` even when the file exists (checksum_src of an empty body) — noisy dry runs. | Related to row 2 (`get_url` without `force:`). |
+| 12 | Phase 2, 2026-10-28 | ArgoCD `media-server` | `cluster-health.sh` warns `Synced/Progressing`. | Not this plan (homelab-k3s). |

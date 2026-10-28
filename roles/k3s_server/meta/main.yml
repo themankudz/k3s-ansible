@@ -26,6 +26,11 @@ argument_specs:
         description: Name of the master group
         default: master
 
+      k3s_server_addon_master:
+        description: >-
+          Inventory host that owns the kube-vip/MetalLB manifests in
+          server/manifests (first of primary-master, else of group_name_master)
+
       k3s_create_kubectl_symlink:
         description: Create the kubectl -> k3s symlink
         default: false

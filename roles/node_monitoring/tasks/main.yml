@@ -48,16 +48,39 @@
   register: _otelcol_acl_pkg
   when: node_monitoring_traverse_dirs | length > 0
 
+# A directory that doesn't exist yet is skipped: on a node that isn't running
+# k3s yet (join-agent.yml applies this baseline before k3s starts) k3s only
+# creates agent/containerd at first start. join-agent.yml runs this role again
+# once the node is up; the next upgrade-k3s.yml run would catch it too.
+- name: Find which log parent directories exist
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ node_monitoring_traverse_dirs }}"
+  register: _otelcol_traverse_dirs
+
+- name: Note log parent directories that don't exist (yet)
+  ansible.builtin.debug:
+    msg: >-
+      Skipping traverse ACLs on missing {{ _otelcol_missing_dirs | join(', ') }}
+      -- expected before k3s first starts, otherwise check node_monitoring_traverse_dirs.
+  vars:
+    _otelcol_missing_dirs: >-
+      {{ _otelcol_traverse_dirs.results | rejectattr('stat.exists')
+         | map(attribute='item') | list }}
+  when: _otelcol_missing_dirs | length > 0
+
 # Skipped in check mode when acl would only just have been installed
 # (setfacl isn't really there yet, so the module can't run).
 - name: Grant otelcol-contrib traverse access to log parent directories
   ansible.posix.acl:
-    path: "{{ item }}"
+    path: "{{ item.item }}"
     entity: otelcol-contrib
     etype: user
     permissions: x
     state: present
-  loop: "{{ node_monitoring_traverse_dirs }}"
+  loop: "{{ _otelcol_traverse_dirs.results | selectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
   when: not (ansible_check_mode and _otelcol_acl_pkg is changed)
 
 - name: Template otelcol-contrib config

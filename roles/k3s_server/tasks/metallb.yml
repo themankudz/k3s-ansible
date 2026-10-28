@@ -6,7 +6,7 @@
     owner: root
     group: root
     mode: "0644"
-  when: ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
+  when: inventory_hostname == k3s_server_addon_master
 
 - name: "Download to first master: manifest for metallb-{{ metal_lb_type }}"
   ansible.builtin.get_url:
@@ -19,7 +19,7 @@
   retries: "{{ download_retries }}"
   delay: "{{ download_delay }}"
   until: metallb_manifest_download is succeeded
-  when: ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
+  when: inventory_hostname == k3s_server_addon_master
 
 - name: Set image versions in manifest for metallb-{{ metal_lb_type }}
   ansible.builtin.replace:
@@ -31,7 +31,7 @@
       to: metallb/speaker:{{ metal_lb_speaker_tag_version }}
   loop_control:
     label: "{{ item.change }} => {{ item.to }}"
-  when: ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
+  when: inventory_hostname == k3s_server_addon_master
 
 # Extra speaker tolerations go into the manifest file itself, not a kubectl
 # patch: k3s re-applies every file in server/manifests at each start (seen in
@@ -53,13 +53,13 @@
           ~ (metal_lb_speaker_extra_tolerations | to_nice_yaml(indent=2) | indent(6, true))
           ~ '      # END metal_lb_speaker_extra_tolerations\n')
          if metal_lb_speaker_extra_tolerations | length > 0 else '' }}
-  when: ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
+  when: inventory_hostname == k3s_server_addon_master
 
 - name: Read back MetalLB manifest from first master
   ansible.builtin.slurp:
     src: /var/lib/rancher/k3s/server/manifests/metallb-crds.yaml
   register: metallb_manifest
-  when: ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
+  when: inventory_hostname == k3s_server_addon_master
 
 - name: Check the MetalLB speaker image reference is present
   ansible.builtin.set_fact:
@@ -68,7 +68,7 @@
         ('quay.io/metallb/speaker:' ~ metal_lb_speaker_tag_version) in
         (metallb_manifest.content | default('') | b64decode)
       }}
-  when: ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
+  when: inventory_hostname == k3s_server_addon_master
 
 - name: Fail if MetalLB speaker tag was not applied to the manifest
   ansible.builtin.fail:
@@ -78,7 +78,7 @@
       was not found in the downloaded manifest. The upstream image
       reference may have changed.
   when:
-    - ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
+    - inventory_hostname == k3s_server_addon_master
     - not metallb_manifest_has_speaker_tag
 
 - name: Fail if the extra MetalLB speaker tolerations were not written to the manifest
@@ -89,7 +89,12 @@
       upstream control-plane toleration (the anchor) was not found. The
       upstream manifest layout may have changed.
   when:
-    - ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
+    - inventory_hostname == k3s_server_addon_master
     - metal_lb_speaker_extra_tolerations | length > 0
     - not ansible_check_mode
     - "'# BEGIN metal_lb_speaker_extra_tolerations' not in (metallb_manifest.content | default('') | b64decode)"
+
+- name: Keep the MetalLB manifests on the primary master only
+  ansible.builtin.include_tasks: primary-only-manifests.yml
+  vars:
+    k3s_server_primary_only_manifests: [metallb-crds.yaml]

@@ -182,6 +182,14 @@
       delay: 10
       when: not ansible_check_mode
 
+    # The baseline ran before k3s existed, so node_monitoring skipped the
+    # traverse ACLs on directories k3s creates at first start
+    # (agent/containerd). Grant them now that they exist.
+    - name: Grant log traverse ACLs on directories k3s just created
+      ansible.builtin.include_role:
+        name: node_monitoring
+      when: node_monitoring_enabled | default(false) | bool
+
     - name: Read the node's taints and labels
       ansible.builtin.command:
         cmd: >-

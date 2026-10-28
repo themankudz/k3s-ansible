@@ -193,6 +193,7 @@ fi
 
 # --- Longhorn ---------------------------------------------------------------
 LH_NODES=$(kjson nodes.longhorn.io -n longhorn-system)
+LH_NAMES=$(printf '%s' "$LH_NODES" | jq -r '.items[]?.metadata.name')
 if [ "$(printf '%s' "$LH_NODES" | jq '.items | length')" -gt 0 ]; then
   section "Longhorn"
   bad=$(printf '%s' "$LH_NODES" | jq -r '.items[]
@@ -206,9 +207,12 @@ if [ "$(printf '%s' "$LH_NODES" | jq '.items | length')" -gt 0 ]; then
   # The CSI node plugin must re-register with kubelet after a reboot; until it
   # does, every Longhorn mount on that node fails ("driver name
   # driver.longhorn.io not found in the list of registered CSI drivers").
-  missing=$(kjson csinodes | jq -r '.items[]
+  # Only Longhorn nodes count: a tainted node Longhorn doesn't tolerate (the
+  # kitchen node, docs/kitchen-node) has no Longhorn node object and no CSI.
+  missing=$(kjson csinodes | jq -r --argjson lh "$(printf '%s' "$LH_NODES" | jq '[.items[].metadata.name]')" '.items[]
+    | select(.metadata.name as $n | $lh | index($n))
     | select([.spec.drivers[]?.name] | index("driver.longhorn.io") | not) | .metadata.name')
-  if [ -z "$missing" ]; then ok "Longhorn CSI driver registered on every node"
+  if [ -z "$missing" ]; then ok "Longhorn CSI driver registered on every Longhorn node"
   else fail "Longhorn CSI driver NOT registered on: $(echo $missing)"; fi
 
   VOLS=$(kjson volumes.longhorn.io -n longhorn-system)
@@ -262,7 +266,10 @@ if $SSH_CHECKS; then
     [ "$(get disk)" -ge 90 ] 2>/dev/null && problems="$problems root disk $(get disk)%;"
     [ "$(get disk)" -ge 80 ] 2>/dev/null && [ "$(get disk)" -lt 90 ] && warnings="$warnings root disk $(get disk)%;"
     [ -n "$(get failed)" ] && warnings="$warnings failed units: $(get failed);"
-    [ "$(get iscsid)" = "active" ] || warnings="$warnings iscsid=$(get iscsid);"
+    # iscsid only matters where Longhorn runs (see the CSI check above).
+    if [ -z "$LH_NAMES" ] || printf '%s\n' "$LH_NAMES" | grep -qx "$name"; then
+      [ "$(get iscsid)" = "active" ] || warnings="$warnings iscsid=$(get iscsid);"
+    fi
     [ "$(get reboot)" = "yes" ] && warnings="$warnings reboot-required;"
     base="$name: $unit active, up $(get up), disk $(get disk)%"
     if [ -n "$problems" ]; then fail "$name:$problems$warnings"

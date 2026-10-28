@@ -5,6 +5,16 @@ k3s_kubectl_binary: k3s kubectl
 
 group_name_master: master
 
+# The master that owns the addon manifests (kube-vip, MetalLB) in
+# server/manifests. Not groups[group_name_master][0]: when a host sits in two
+# child groups of [master] (primary-master and pi-master), that group has no
+# stable order -- ansible-core 2.21 returned k3s-1 or k3s-7 first at random --
+# so each run could write the manifests to a different master. A primary-master
+# host that isn't in group_name_master is ignored (falls back to its first host).
+k3s_server_addon_master: >-
+  {{ (groups['primary-master'] | default([]) | intersect(groups[group_name_master])
+      or groups[group_name_master]) | first }}
+
 kube_vip_arp: true
 kube_vip_iface:
 kube_vip_endpoint:

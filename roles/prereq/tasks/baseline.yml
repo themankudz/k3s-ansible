@@ -16,6 +16,37 @@
   tags: apt-cacher
   when: ansible_facts['os_family'] == "Debian" and (apt_proxy_http_url is defined)
 
+# Some Ubuntu images (k3s-9's Pi Imager 24.04.5 flash) list only the release
+# suite in the main stanza of the deb822 sources, yet ship packages from
+# -updates (libacl1 2.3.2-1build1.1). Installing anything that pins the older
+# release version then fails ("acl : Depends: libacl1 (= 2.3.2-1build1)").
+# Only a main stanza listing the bare release suite is rewritten, to the
+# stock "<release> <release>-updates <release>-backports" every other node has.
+- name: Check for deb822 Ubuntu apt sources
+  ansible.builtin.stat:
+    path: /etc/apt/sources.list.d/ubuntu.sources
+  register: prereq_ubuntu_sources
+  when: ansible_facts['distribution'] == "Ubuntu"
+
+- name: Add the -updates and -backports pockets to the Ubuntu apt sources
+  ansible.builtin.replace:
+    path: /etc/apt/sources.list.d/ubuntu.sources
+    regexp: "^Suites: {{ ansible_facts['distribution_release'] }}$"
+    replace: >-
+      Suites: {{ ansible_facts['distribution_release'] }}
+      {{ ansible_facts['distribution_release'] }}-updates
+      {{ ansible_facts['distribution_release'] }}-backports
+  register: prereq_ubuntu_sources_pockets
+  when:
+    - ansible_facts['distribution'] == "Ubuntu"
+    - prereq_ubuntu_sources.stat.exists
+
+# Not a handler: later roles in the same run install packages and need it now.
+- name: Refresh the apt cache after adding pockets
+  ansible.builtin.apt:
+    update_cache: true
+  when: prereq_ubuntu_sources_pockets is changed # noqa no-handler
+
 # k3s recommends swap be disabled on all nodes. Disabling swap is all-or-nothing
 # across the cluster: leaving it enabled on some nodes but not others creates
 # uneven scheduling/latency behavior. This block turns swap off and comments out

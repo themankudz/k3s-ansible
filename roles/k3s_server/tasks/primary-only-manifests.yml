@@ -1,0 +1,48 @@
+---
+# The addon manifests (kube-vip, MetalLB) are written to k3s_server_addon_master
+# only, but every k3s server applies whatever is in its own server/manifests
+# at each start. A copy on another master (k3s-1 got one while the "first
+# master" was still groups['master'][0], whose order wasn't stable) is
+# re-applied whenever that master restarts, silently undoing a version bump
+# or the speaker tolerations made on the primary. k3s ignores <file> when <file>.skip exists (and deletes
+# nothing), so stray copies are disabled here rather than removed; the
+# primary drops any .skip so a newly promoted master applies its copies.
+#
+# Expects k3s_server_primary_only_manifests: file names in server/manifests.
+
+# Without this, no master would match: nothing written, every copy skipped.
+- name: Assert the addon master is one of the masters
+  ansible.builtin.assert:
+    that: k3s_server_addon_master in groups[group_name_master]
+    fail_msg: >-
+      k3s_server_addon_master ({{ k3s_server_addon_master }}) is not in
+      groups['{{ group_name_master }}'] -- the addon manifests would go nowhere.
+    quiet: true
+  run_once: true
+
+- name: Check for addon manifests on non-primary masters
+  ansible.builtin.stat:
+    path: /var/lib/rancher/k3s/server/manifests/{{ item }}
+  loop: "{{ k3s_server_primary_only_manifests }}"
+  register: k3s_server_stray_manifests
+  when: inventory_hostname != k3s_server_addon_master
+
+- name: Skip stray addon manifests on non-primary masters
+  ansible.builtin.copy:
+    content: ""
+    dest: /var/lib/rancher/k3s/server/manifests/{{ item.item }}.skip
+    owner: root
+    group: root
+    mode: "0644"
+  loop: >-
+    {{ k3s_server_stray_manifests.results | default([])
+       | selectattr('stat', 'defined') | selectattr('stat.exists') | list }}
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Remove .skip markers for addon manifests on the primary master
+  ansible.builtin.file:
+    path: /var/lib/rancher/k3s/server/manifests/{{ item }}.skip
+    state: absent
+  loop: "{{ k3s_server_primary_only_manifests }}"
+  when: inventory_hostname == k3s_server_addon_master
