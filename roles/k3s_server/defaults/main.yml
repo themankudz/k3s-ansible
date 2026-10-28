@@ -41,6 +41,9 @@ metal_lb_type: native
 # k3s apply of it -- including the one at each k3s start -- keeps them.
 # Empty = upstream manifest as-is.
 metal_lb_speaker_extra_tolerations: []
+# Where tasks/metallb.yml builds the manifest before copying it into
+# server/manifests (k3s must never see it half-edited). Not under manifests/.
+metallb_manifest_build: /var/lib/rancher/k3s/server/metallb-crds.build.yaml
 
 # Shared retry/delay for remote manifest and asset downloads. The CI runner's
 # resolver intermittently times out on GitHub-hosted domains (helm.cilium.io,

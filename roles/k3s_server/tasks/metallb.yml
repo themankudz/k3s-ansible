@@ -8,10 +8,18 @@
     mode: "0644"
   when: inventory_hostname == k3s_server_addon_master
 
+# The manifest is built in metallb_manifest_build, outside server/manifests,
+# and copied in only once it is complete and verified. get_url re-downloads on
+# every run (raw.githubusercontent.com ignores If-Modified-Since, and the
+# edited file never matches upstream), so building it in place handed k3s the
+# plain upstream manifest -- no extra tolerations -- until the edits below
+# landed. The build steps touch only that scratch file, so they also run in
+# --check, which keeps the dry run's verdict on the real file accurate.
 - name: "Download to first master: manifest for metallb-{{ metal_lb_type }}"
   ansible.builtin.get_url:
     url: https://raw.githubusercontent.com/metallb/metallb/{{ metal_lb_controller_tag_version }}/config/manifests/metallb-{{ metal_lb_type }}.yaml # noqa yaml[line-length]
-    dest: /var/lib/rancher/k3s/server/manifests/metallb-crds.yaml
+    dest: "{{ metallb_manifest_build }}"
+    force: true
     owner: root
     group: root
     mode: "0644"
@@ -19,11 +27,13 @@
   retries: "{{ download_retries }}"
   delay: "{{ download_delay }}"
   until: metallb_manifest_download is succeeded
+  changed_when: false
+  check_mode: false
   when: inventory_hostname == k3s_server_addon_master
 
 - name: Set image versions in manifest for metallb-{{ metal_lb_type }}
   ansible.builtin.replace:
-    path: /var/lib/rancher/k3s/server/manifests/metallb-crds.yaml
+    path: "{{ metallb_manifest_build }}"
     regexp: "{{ item.change | ansible.builtin.regex_escape }}"
     replace: "{{ item.to }}"
   with_items:
@@ -31,6 +41,8 @@
       to: metallb/speaker:{{ metal_lb_speaker_tag_version }}
   loop_control:
     label: "{{ item.change }} => {{ item.to }}"
+  changed_when: false
+  check_mode: false
   when: inventory_hostname == k3s_server_addon_master
 
 # Extra speaker tolerations go into the manifest file itself, not a kubectl
@@ -42,7 +54,7 @@
 # downloaded manifest simply gets it again.
 - name: Set extra MetalLB speaker tolerations in the manifest
   ansible.builtin.replace:
-    path: /var/lib/rancher/k3s/server/manifests/metallb-crds.yaml
+    path: "{{ metallb_manifest_build }}"
     regexp: >-
       ^(        key: node-role\.kubernetes\.io/control-plane\n        operator: Exists\n)(?:      # BEGIN
       metal_lb_speaker_extra_tolerations\n(?:.*\n)*?      # END metal_lb_speaker_extra_tolerations\n)?
@@ -53,11 +65,13 @@
           ~ (metal_lb_speaker_extra_tolerations | to_nice_yaml(indent=2) | indent(6, true))
           ~ '      # END metal_lb_speaker_extra_tolerations\n')
          if metal_lb_speaker_extra_tolerations | length > 0 else '' }}
+  changed_when: false
+  check_mode: false
   when: inventory_hostname == k3s_server_addon_master
 
 - name: Read back MetalLB manifest from first master
   ansible.builtin.slurp:
-    src: /var/lib/rancher/k3s/server/manifests/metallb-crds.yaml
+    src: "{{ metallb_manifest_build }}"
   register: metallb_manifest
   when: inventory_hostname == k3s_server_addon_master
 
@@ -91,8 +105,19 @@
   when:
     - inventory_hostname == k3s_server_addon_master
     - metal_lb_speaker_extra_tolerations | length > 0
-    - not ansible_check_mode
     - "'# BEGIN metal_lb_speaker_extra_tolerations' not in (metallb_manifest.content | default('') | b64decode)"
+
+# Only reports changed when the content differs; the copy is an atomic
+# rename, so k3s never sees a half-written file.
+- name: Install the MetalLB manifest for k3s to apply
+  ansible.builtin.copy:
+    src: "{{ metallb_manifest_build }}"
+    dest: /var/lib/rancher/k3s/server/manifests/metallb-crds.yaml
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname == k3s_server_addon_master
 
 - name: Keep the MetalLB manifests on the primary master only
   ansible.builtin.include_tasks: primary-only-manifests.yml
