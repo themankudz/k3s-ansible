@@ -23,10 +23,6 @@ repos:
         additional_dependencies: [ansible-core==2.18.0]
         language_version: python3.12
         args: [--offline]
-  - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: v0.9.0.6
-    hooks:
-      - id: shellcheck
   - repo: https://github.com/Lucas-C/pre-commit-hooks
     rev: v1.5.4
     hooks:
@@ -38,6 +34,12 @@ repos:
       - id: fix-smartquotes
   - repo: local
     hooks:
+      - id: shellcheck
+        name: shellcheck
+        entry: shellcheck
+        language: python
+        additional_dependencies: [shellcheck-py==0.11.0.1]
+        types: [shell]
       - id: cleanup-runner-resources-test
         name: cleanup runner resources test
         entry: .github/scripts/test-cleanup-runner-resources.sh
@@ -74,6 +76,12 @@ repos:
         language: system
         pass_filenames: false
         files: ^site\.yml$|^tasks/reconcile-node\.yml$|^\.github/scripts/test-baseline-parity\.sh$ # noqa yaml[line-length]
+      - id: k3s-init-log-destination-test
+        name: K3s init log destination test
+        entry: .github/scripts/test-k3s-init-log-destination.py
+        language: system
+        pass_filenames: false
+        files: ^roles/k3s_server/tasks/main\.yml$|^\.github/scripts/test-k3s-init-log-destination\.py$
       - id: unique-hostname-precheck-test
         name: Unique hostname precheck test
         entry: .github/scripts/test-unique-hostname-precheck.sh
@@ -86,6 +94,12 @@ repos:
         language: system
         pass_filenames: false
         files: ^roles/prereq/(tasks/(main|baseline)|defaults/main)\.yml$|^\.github/scripts/test-disable-swap\.sh$ # noqa yaml[line-length]
+      - id: raspberrypi-detection-test
+        name: Raspberry Pi detection test
+        entry: .github/scripts/test-raspberrypi-detection.sh
+        language: system
+        pass_filenames: false
+        files: ^roles/raspberrypi/(tasks/main|defaults/main)\.yml$|^\.github/scripts/test-raspberrypi-detection\.sh$
       - id: cilium-bgp-manifest-test
         name: Cilium BGP manifest test
         entry: python3 .github/scripts/test-cilium-bgp-manifest.py

@@ -26,7 +26,7 @@ if grep -Fq -- "node-role.kubernetes.io/master=true' -o=jsonpath" "$main_tasks";
   exit 1
 fi
 
-grep -Fq -- "map('extract', hostvars, 'ansible_hostname')" "$main_tasks"
+grep -Fq -- "map('extract', hostvars, ['ansible_facts', 'hostname'])" "$main_tasks"
 grep -Fq -- 'difference(nodes.stdout.split())' "$main_tasks"
 grep -Fq -- 'crd/addons.k3s.cattle.io' "$main_tasks"
 grep -Fq -- 'crd/helmcharts.helm.cattle.io' "$main_tasks"

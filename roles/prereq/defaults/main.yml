@@ -1,5 +1,8 @@
 ---
 disable_swap: true
+# Let baseline.yml reboot a node itself (RedHat kernel-modules-extra install).
+# tasks/reconcile-node.yml sets false: live nodes reboot only via reboot.yml.
+prereq_allow_reboot: true
 
 secure_path:
   RedHat: /sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin

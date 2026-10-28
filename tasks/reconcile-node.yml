@@ -17,6 +17,8 @@
   ansible.builtin.include_role:
     name: prereq
     tasks_from: baseline.yml
+  vars:
+    prereq_allow_reboot: false
 
 - name: Reconcile Raspberry Pi tuning
   ansible.builtin.include_role:
