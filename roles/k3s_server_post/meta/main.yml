@@ -158,7 +158,7 @@ argument_specs:
 
       metal_lb_controller_tag_version:
         description: Image tag for MetalLB
-        default: v0.16.0
+        default: v0.16.1
 
       metal_lb_mode:
         description: Metallb mode

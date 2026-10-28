@@ -19,7 +19,7 @@ kube_vip_arp: true
 kube_vip_iface:
 kube_vip_endpoint:
 kube_vip_cloud_provider_tag_version: v0.0.12
-kube_vip_tag_version: v1.2.3
+kube_vip_tag_version: v1.2.4
 
 kube_vip_bgp: false
 kube_vip_bgp_routerid: 127.0.0.1
@@ -33,8 +33,8 @@ kube_vip_bgp_peers_groups: ['k3s_master']
 kube_vip_enabled: true
 
 metal_lb_enabled: true
-metal_lb_controller_tag_version: v0.16.0
-metal_lb_speaker_tag_version: v0.16.0
+metal_lb_controller_tag_version: v0.16.1
+metal_lb_speaker_tag_version: v0.16.1
 metal_lb_type: native
 # Extra tolerations for the MetalLB speaker DaemonSet (Kubernetes toleration
 # objects), written into the downloaded manifest by tasks/metallb.yml so every

@@ -15,7 +15,7 @@ This repository is solely for **cluster infrastructure** — provisioning nodes,
 Ansible-based automation for deploying a k3s Kubernetes homelab cluster with kube-vip and MetalLB. Mixed architecture: Raspberry Pi, Unraid, and x86 nodes.
 
 **Current Configuration**:
-- **k3s version**: v1.36.4+k3s1
+- **k3s version**: v1.36.5+k3s1
 - **API Endpoint (VIP)**: 192.168.50.200
 - **MetalLB IP Range**: 192.168.50.202-192.168.50.227 (homelab-cluster); 192.168.50.228-192.168.50.254 (workload-cluster)
 - **CNI**: Flannel (eth0 interface)
@@ -237,7 +237,7 @@ schedulable (`k3s_master_taint: false`, no agent nodes). Each has a dedicated
 | **download** | Download and install k3s binary |
 | **raspberrypi** | Pi-specific boot config (cgroups, cmdline.txt) — Pi nodes only |
 | **k3s_custom_registries** | Configure Harbor registry mirrors with insecure TLS |
-| **k3s_server** | Deploy k3s control plane with kube-vip v1.2.3 and MetalLB v0.16.0. The addon manifests in `server/manifests` live on `k3s_server_addon_master` only (first of `primary-master` — `groups['master']` has no stable order when a host is in two of its child groups); `tasks/primary-only-manifests.yml` writes `<file>.skip` for stray copies on other masters (k3s ignores, deletes nothing) and drops it on the primary. `metal_lb_speaker_extra_tolerations` is written into the MetalLB manifest itself. |
+| **k3s_server** | Deploy k3s control plane with kube-vip v1.2.4 and MetalLB v0.16.1. The addon manifests in `server/manifests` live on `k3s_server_addon_master` only (first of `primary-master` — `groups['master']` has no stable order when a host is in two of its child groups); `tasks/primary-only-manifests.yml` writes `<file>.skip` for stray copies on other masters (k3s ignores, deletes nothing) and drops it on the primary. `metal_lb_speaker_extra_tolerations` is written into the MetalLB manifest itself. |
 | **k3s_agent** | Join worker nodes to cluster |
 | **k3s_server_post** | Configure MetalLB Layer2 mode |
 | **node_longhorn** | Format and mount a dedicated Longhorn disk (`node_longhorn_disk`). Default is empty (skip). Configure per-node or per-group in host/group vars. |
