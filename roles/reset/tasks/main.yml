@@ -58,6 +58,15 @@
     - "{{ systemd_dir }}/k3s-node.service.d"
   when: proxy_env is defined
 
+# node_monitoring's ACL drop-in (on every k3s node, proxy or not).
+- name: Remove the otelcol log ACL drop-ins
+  ansible.builtin.file:
+    name: "{{ item }}"
+    state: absent
+  with_items:
+    - "{{ systemd_dir }}/k3s.service.d/60-otelcol-log-acl.conf"
+    - "{{ systemd_dir }}/k3s-node.service.d/60-otelcol-log-acl.conf"
+
 - name: Reload daemon_reload
   ansible.builtin.systemd:
     daemon_reload: true

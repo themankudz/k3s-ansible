@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+# k3s resets agent/containerd to 0700 at every start, masking the
+# otelcol-contrib traverse ACL; re-grant it (setfacl recalculates the mask).
+# '-': a failure here never fails the k3s start.
+[Service]
+{% for dir in node_monitoring_traverse_dirs %}
+ExecStartPost=-/usr/bin/setfacl -m u:otelcol-contrib:x {{ dir }}
+{% endfor %}

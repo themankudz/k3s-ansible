@@ -1,25 +1,28 @@
 # Kitchen node — handoff
 
-**Phase completed:** Phase 3 (Mop-up), second part (2026-10-29) — rows 1, 7, 10, 13, 15 fixed.
-- `site.yml` refuses an established cluster (first play, `hosts: all`, `tags: always`) and a `--limit` that drops a master.
-- One `k3s_primary_master` (`vars/k3s-primary-master.yml`, loaded with `vars_files`) for cluster-init, joins, the
-  agent join token (no stale `k3s_token` fallback), addon/CNI manifests, kubeconfig. Tagged includes `apply` their tags.
-- SD-card nodes drop the old persistent journal (k3s-9's 23M goes at the next `upgrade-k3s.yml` run).
+**Phase completed:** Phase 3 (Mop-up), third part (2026-10-29). Row 17 is fixed in code; the live check is pending.
+- `node_monitoring` puts the drop-in `60-otelcol-log-acl.conf` on `k3s` (masters) or `k3s-node` (agents). Its
+  `ExecStartPost=-setfacl` re-grants the otelcol traverse ACL that k3s's chmod of `agent/containerd` masks at
+  every start. It only reloads systemd and never restarts k3s. Stale copies are removed, and `reset` removes it too.
+- Both clusters' `--check` runs are clean: only the drop-in, the ACL, the known `/tmp/k3s` noise and k3s-9's journal.
 
-**Next phase:** Phase 3 continued — rows 17 and 18 (found today). Then archive the plan (row 6's end-of-Nov
-re-check lives in homelab-k3s, `plans/kitchen-node-apps-plan.md` Mop-up row 1).
+**Next phase:** Phase 3 continued.
+- Run `upgrade-k3s.yml` live on both clusters. This lands rows 10 and 17.
+- Prove row 17: restart k3s-9's `k3s-node`, then check that otelcol can still read `containerd.log`.
+- Then do row 18, then archive the plan. Row 6's end-of-Nov re-check lives in homelab-k3s, in
+  `plans/kitchen-node-apps-plan.md` Mop-up row 1.
 
-**Files for the open rows:**
-- 17: `roles/node_monitoring/tasks/` (traverse ACL task), `inventory/*/group_vars/all.yml` `node_monitoring_traverse_dirs`
-  (gitignored); k3s resets `agent/containerd`'s mode at every start → ACL mask `---`.
-- 18: `upgrade-k3s.yml` preflight ("Assert every inventory host maps to an actual cluster node", reads facts of
-  limited-out hosts), `tasks/reconcile-node.yml` (untagged includes, so `--tags hygiene` etc. reach nothing).
+**Files for the open work:**
+- 17, live check: `sudo -u otelcol-contrib test -r /var/lib/rancher/k3s/agent/containerd/containerd.log` and `getfacl` (mask `--x`).
+- 18: the `upgrade-k3s.yml` preflight ("Assert every inventory host maps to an actual cluster node") reads facts of
+  limited-out hosts. `tasks/reconcile-node.yml` has untagged includes, so `--tags hygiene` etc. reach nothing.
 
 **Invariants / gotchas:**
-- Never `site.yml` on a live cluster (it now refuses); never `--diff` (join token, SMTP secrets). Always pass `-i`.
-- `k3s_primary_master` comes from play `vars_files`, so an inventory value is ignored (only `-e` overrides). A new
-  play that runs k3s_server/k3s_server_post/k3s_agent or the agent template must load it (`test-addon-master.py`).
-- The inventory `k3s_token` is stale; the agent template fails if `token` isn't set on the primary first.
-- `run_once` + a `when` on a specific host only evaluates the first host — use one or the other.
-- k3s-8 is never drained; workload needs `-e k3s_upgrade_drain=false`. `--check` of `upgrade-k3s.yml` needs
-  `-e k3s_upgrade_etcd_snapshot=false`. Expected `--check` noise: traverse ACL (row 17), `/tmp/k3s` CR copy.
+- Never run `site.yml` on a live cluster (it now refuses). Never use `--diff` (join token, SMTP secrets). Always pass `-i`.
+- `k3s_primary_master` comes from play `vars_files`, so an inventory value is ignored (only `-e` overrides it). A new
+  play that runs k3s_server, k3s_server_post, k3s_agent or the agent template must load it (`test-addon-master.py`).
+- The inventory `k3s_token` is stale. The agent template fails if `token` isn't set on the primary first.
+- `run_once` combined with a `when` on a specific host evaluates only the first host, so use one or the other.
+- k3s-8 is never drained, and workload needs `-e k3s_upgrade_drain=false`. `--check` of `upgrade-k3s.yml` needs
+  `-e k3s_upgrade_etcd_snapshot=false`.
+- The ACL drop-in must not override the mask (`m::`). setfacl recalculates it.

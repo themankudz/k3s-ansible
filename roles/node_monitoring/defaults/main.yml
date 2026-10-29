@@ -49,6 +49,12 @@ node_monitoring_extra_log_files: []
 # Root-only directories on the path to those files; the agent user gets a
 # traverse-only (x) ACL on each so it can open the (0644) files beneath.
 node_monitoring_traverse_dirs: []
+# k3s resets agent/containerd to 0700 at every start, and that chmod masks
+# the ACL above to nothing. On k3s nodes a drop-in on this unit re-grants it
+# after each start: k3s on masters, k3s-node on agents, none elsewhere.
+node_monitoring_k3s_unit: >-
+  {{ ('k3s' if inventory_hostname in groups.get(group_name_master | default('master'), [])
+      else 'k3s-node') if node_monitoring_k8s_node | bool else '' }}
 
 # Set on k3s nodes so host logs carry the same k8s.cluster.name /
 # k8s.node.name attributes as the k8s-infra container logs from that node.

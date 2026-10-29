@@ -151,6 +151,15 @@ repos:
           - PyYAML
         pass_filenames: false
         files: ^site\.yml$|^\.github/scripts/test-site-guard\.py$
+      - id: node-monitoring-acl-dropin-test
+        name: node_monitoring ACL drop-in test
+        entry: python3 .github/scripts/test-node-monitoring-acl-dropin.py
+        language: python
+        additional_dependencies:
+          - Jinja2>=3.1
+          - PyYAML
+        pass_filenames: false
+        files: ^roles/(node_monitoring|reset)/|^\.github/scripts/test-node-monitoring-acl-dropin\.py$
       - id: include-apply-tags-test
         name: Include apply-tags test
         entry: python3 .github/scripts/test-include-apply-tags.py
