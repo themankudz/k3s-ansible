@@ -26,7 +26,11 @@
   ansible.builtin.include_tasks: vip.yml
   when: kube_vip_enabled
 - name: Deploy metallb manifest
-  ansible.builtin.include_tasks: metallb.yml
+  ansible.builtin.include_tasks:
+    file: metallb.yml
+    # without apply the tag only selects the include, not its tasks
+    apply:
+      tags: metallb
   tags: metallb
   # Deploy MetalLB unless explicitly disabled, kube-vip owns the load balancer
   # IP range, or Cilium BGP is enabled (Cilium then provides its own load
@@ -36,7 +40,10 @@
   when: metal_lb_enabled and kube_vip_lb_ip_range is not defined and not (cilium_bgp | default(false) | bool)
 
 - name: Deploy kube-vip manifest
-  ansible.builtin.include_tasks: kube-vip.yml
+  ansible.builtin.include_tasks:
+    file: kube-vip.yml
+    apply:
+      tags: kubevip
   tags: kubevip
   when: kube_vip_enabled and kube_vip_lb_ip_range is defined
 
@@ -51,7 +58,7 @@
       when: groups[group_name_master | default('master')] | length > 1
 
     - name: Orchestrate control-plane initialization from the first master
-      when: inventory_hostname == groups[group_name_master | default('master')][0]
+      when: inventory_hostname == k3s_primary_master
       block:
         - name: Init the first master inside the transient k3s-init service
           ansible.builtin.command:
@@ -75,7 +82,7 @@
         - name: Verify the first master API listener on its node address
           ansible.builtin.wait_for:
             host: >-
-              {{ hostvars[groups[group_name_master | default('master')][0]].k3s_node_ip
+              {{ hostvars[k3s_primary_master].k3s_node_ip
               | split(',') | first }}
             port: 6443
             connect_timeout: 2
@@ -83,7 +90,7 @@
 
         - name: Join additional masters one at a time
           ansible.builtin.include_tasks: join_master.yml
-          loop: "{{ groups[group_name_master | default('master')][1:] }}"
+          loop: "{{ groups[group_name_master | default('master')] | difference([k3s_primary_master]) }}"
           loop_control:
             loop_var: joining_master
           when: groups[group_name_master | default('master')] | length > 1

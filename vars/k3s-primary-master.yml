@@ -1,0 +1,16 @@
+---
+# The one master everything that needs "the first master" uses: cluster-init
+# and the joins (k3s_server), the addon manifests, the join token the agent
+# unit reads (k3s_agent's template, also rendered by upgrade-k3s.yml and
+# join-agent.yml), the CNI manifests, the kubeconfig fetch. Loaded with
+# vars_files by every play that needs it.
+#
+# Not groups['master'][0]: when a host sits in two child groups of [master]
+# (primary-master and pi-master), that group has no stable order --
+# ansible-core 2.21 returned k3s-1 or k3s-7 first at random. The first
+# primary-master host that is a master; inventories without a primary-master
+# group (inventory/sample) fall back to the first master.
+k3s_primary_master: >-
+  {{ (groups['primary-master'] | default([])
+      | intersect(groups[group_name_master | default('master')])
+      or groups[group_name_master | default('master')]) | first }}

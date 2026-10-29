@@ -1,7 +1,7 @@
 ---
 - name: Deploy Calico to cluster
-  when: ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
-  run_once: true
+  # No run_once: it would evaluate this when on the play's first host only.
+  when: inventory_hostname == k3s_primary_master
   block:
     - name: Create manifests directory on first master
       ansible.builtin.file:

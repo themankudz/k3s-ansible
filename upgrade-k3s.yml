@@ -57,6 +57,8 @@
 
 - name: Preflight checks and plan summary
   hosts: k3s_cluster
+  vars_files:
+    - vars/k3s-primary-master.yml
   gather_facts: true
   become: true
   tags: [always]
@@ -150,7 +152,7 @@
       ansible.builtin.command:
         cmd: >-
           kubectl --context {{ kubectl_context }}
-          get node {{ hostvars[groups['master'][0]]['ansible_facts']['hostname'] }}
+          get node {{ hostvars[k3s_primary_master]['ansible_facts']['hostname'] }}
           -o jsonpath='{.status.nodeInfo.kubeletVersion}'
       delegate_to: localhost
       become: false
@@ -365,6 +367,8 @@
 
 - name: Take a pre-upgrade etcd snapshot
   hosts: master
+  vars_files:
+    - vars/k3s-primary-master.yml
   gather_facts: false
   run_once: true
   become: true
@@ -425,8 +429,12 @@
               bundling etcd 3.6, binary rollback is no longer possible and
               this snapshot becomes the only path.
 
+# hosts: k3s_cluster, not master: under an agent-only --limit a master play
+# matches nothing, and the agent unit would render without the token.
 - name: Read the agent join token from the primary master
-  hosts: master
+  hosts: k3s_cluster
+  vars_files:
+    - vars/k3s-primary-master.yml
   gather_facts: false
   run_once: true
   become: true
@@ -438,7 +446,7 @@
       when: (groups['node'] | default([]) | length) > 0
       block:
         # Must be the same host the agent unit template reads the token from
-        # (hostvars[groups[group_name_master][0]]['token']). groups['master']
+        # (hostvars[k3s_primary_master]['token']). groups['master']
         # ordering is NOT stable between runs (k3s-7 is reachable via two
         # child groups), so groups['master'][0] here sometimes picked a
         # different master, left 'token' undefined on the primary, and the
@@ -448,17 +456,19 @@
         - name: Read node-token from the primary master
           ansible.builtin.slurp:
             src: /var/lib/rancher/k3s/server/node-token
-          delegate_to: "{{ groups[group_name_master | default('primary-master')][0] }}"
+          delegate_to: "{{ k3s_primary_master }}"
           register: k3s_upgrade_node_token
 
         - name: Store the join token on the primary master's hostvars
           ansible.builtin.set_fact:
             token: "{{ k3s_upgrade_node_token.content | b64decode | regex_replace('\n', '') }}"
-          delegate_to: "{{ groups[group_name_master | default('primary-master')][0] }}"
+          delegate_to: "{{ k3s_primary_master }}"
           delegate_facts: true
 
 - name: Rolling server upgrade
   hosts: master
+  vars_files:
+    - vars/k3s-primary-master.yml
   gather_facts: true
   serial: 1
   any_errors_fatal: true
@@ -679,6 +689,8 @@
 
 - name: Rolling agent upgrade
   hosts: node
+  vars_files:
+    - vars/k3s-primary-master.yml
   gather_facts: true
   serial: "{{ k3s_upgrade_agent_serial }}"
   any_errors_fatal: true
@@ -873,6 +885,8 @@
 
 - name: Bump kube-vip and MetalLB addon manifests
   hosts: master
+  vars_files:
+    - vars/k3s-primary-master.yml
   gather_facts: true
   become: true
   tags: [addons]
@@ -954,6 +968,8 @@
 
 - name: Final verification
   hosts: master
+  vars_files:
+    - vars/k3s-primary-master.yml
   gather_facts: false
   run_once: true
   become: true

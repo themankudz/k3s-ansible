@@ -155,7 +155,10 @@ cluster can never reach quorum by itself — and leaves every master's real
 service stopped. This caused a full cluster outage on 2026-09-05. `--serial`
 is also not a real `ansible-playbook` CLI flag in the first place; `serial:`
 is a play-level YAML keyword, so the old commands below would either error or
-silently run with no serialization at all.
+silently run with no serialization at all. `site.yml`'s first play now refuses
+(fails every master, `tags: always`) when any master already has
+`/var/lib/rancher/k3s/server/db`; `reset.yml` clears it, and
+`-e site_allow_existing_cluster=true` overrides it.
 
 To upgrade an existing cluster (k3s version, and/or kube-vip/MetalLB), update
 the version variables in `inventory/<cluster>/group_vars/all.yml`, then run
@@ -237,7 +240,7 @@ schedulable (`k3s_master_taint: false`, no agent nodes). Each has a dedicated
 | **download** | Download and install k3s binary |
 | **raspberrypi** | Pi-specific boot config (cgroups, cmdline.txt) — Pi nodes only |
 | **k3s_custom_registries** | Configure Harbor registry mirrors with insecure TLS |
-| **k3s_server** | Deploy k3s control plane with kube-vip v1.2.4 and MetalLB v0.16.1. The addon manifests in `server/manifests` live on `k3s_server_addon_master` only (first of `primary-master` — `groups['master']` has no stable order when a host is in two of its child groups); `tasks/primary-only-manifests.yml` writes `<file>.skip` for stray copies on other masters (k3s ignores, deletes nothing) and drops it on the primary. `metal_lb_speaker_extra_tolerations` is written into the MetalLB manifest itself. |
+| **k3s_server** | Deploy k3s control plane with kube-vip v1.2.4 and MetalLB v0.16.1. The addon manifests in `server/manifests` live on `k3s_server_addon_master` only (= `k3s_primary_master`, `vars/k3s-primary-master.yml`: first of `primary-master` — `groups['master']` has no stable order when a host is in two of its child groups. The same var picks the cluster-init master, the join token the agent unit reads (no fallback to the inventory `k3s_token`, which is stale), the CNI manifests and the kubeconfig fetch; every play using these roles loads it via `vars_files`); `tasks/primary-only-manifests.yml` writes `<file>.skip` for stray copies on other masters (k3s ignores, deletes nothing) and drops it on the primary. `metal_lb_speaker_extra_tolerations` is written into the MetalLB manifest itself. |
 | **k3s_agent** | Join worker nodes to cluster |
 | **k3s_server_post** | Configure MetalLB Layer2 mode |
 | **node_longhorn** | Format and mount a dedicated Longhorn disk (`node_longhorn_disk`). Default is empty (skip). Configure per-node or per-group in host/group vars. |

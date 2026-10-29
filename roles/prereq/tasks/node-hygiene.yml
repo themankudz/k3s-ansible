@@ -17,7 +17,35 @@
     src: journald-k3s-node.conf.j2
     dest: /etc/systemd/journald.conf.d/50-k3s-node.conf
     mode: "0644"
+  register: prereq_journald_conf
   notify: Restart journald
+
+# SD-card nodes: once journald runs volatile, the persistent journal written
+# before that is never rotated again and only wastes the card (journalctl
+# still lists it). journald must not hold it open when it goes, so on the run
+# that writes the drop-in restart it here, not only via the handler (a failed
+# later task would lose the handler). Nothing recreates the dir (systemd's
+# tmpfiles only adjust it if it exists).
+- name: Check for a persistent journal on SD-card nodes
+  ansible.builtin.stat:
+    path: /var/log/journal
+  register: prereq_persistent_journal
+  when: node_sd_card
+
+- name: Restart journald before removing the persistent journal
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted
+  when:
+    - node_sd_card
+    - prereq_journald_conf is changed or prereq_persistent_journal.stat.exists
+    - not ansible_check_mode
+
+- name: Remove the persistent journal on SD-card nodes
+  ansible.builtin.file:
+    path: /var/log/journal
+    state: absent
+  when: node_sd_card
 
 # --- SD-card nodes: pod logs on a tmpfs (the journal is handled by the
 # template above). Mounting over /var/log/pods hides the files of containers

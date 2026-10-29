@@ -223,9 +223,16 @@
   tags: inhibit
 
 - name: Include static /etc/hosts pins
-  ansible.builtin.include_tasks: static-hosts.yml
+  ansible.builtin.include_tasks:
+    file: static-hosts.yml
+    # without apply the tag only selects the include, not its tasks
+    apply:
+      tags: static_hosts
   tags: static_hosts
 
 - name: Include node log/disk hygiene tasks
-  ansible.builtin.include_tasks: node-hygiene.yml
+  ansible.builtin.include_tasks:
+    file: node-hygiene.yml
+    apply:
+      tags: hygiene
   tags: hygiene

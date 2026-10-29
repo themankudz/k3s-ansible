@@ -6,14 +6,8 @@ k3s_kubectl_binary: k3s kubectl
 group_name_master: master
 
 # The master that owns the addon manifests (kube-vip, MetalLB) in
-# server/manifests. Not groups[group_name_master][0]: when a host sits in two
-# child groups of [master] (primary-master and pi-master), that group has no
-# stable order -- ansible-core 2.21 returned k3s-1 or k3s-7 first at random --
-# so each run could write the manifests to a different master. A primary-master
-# host that isn't in group_name_master is ignored (falls back to its first host).
-k3s_server_addon_master: >-
-  {{ (groups['primary-master'] | default([]) | intersect(groups[group_name_master])
-      or groups[group_name_master]) | first }}
+# server/manifests: k3s_primary_master (vars/k3s-primary-master.yml).
+k3s_server_addon_master: "{{ k3s_primary_master }}"
 
 kube_vip_arp: true
 kube_vip_iface:
@@ -56,10 +50,10 @@ retry_count: 20
 # yamllint disable rule:line-length
 server_init_args: >-
   {% if groups[group_name_master | default('primary-master')] | length > 1 %}
-    {% if ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] %}
+    {% if inventory_hostname == k3s_primary_master %}
       --cluster-init
     {% else %}
-      --server https://{{ hostvars[groups[group_name_master | default('primary-master')][0]].k3s_node_ip | split(",") | first | ansible.utils.ipwrap }}:6443
+      --server https://{{ hostvars[k3s_primary_master].k3s_node_ip | split(",") | first | ansible.utils.ipwrap }}:6443
     {% endif %}
     --token {{ k3s_token | replace('%', '%%') }}
   {% endif %}

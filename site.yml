@@ -1,4 +1,49 @@
 ---
+# site.yml is bootstrap-only: against an established cluster k3s_server stops
+# k3s on every master at once and re-inits the first one alone, which can't
+# reach etcd quorum (full outage 2026-09-05). Refuse before anything changes.
+# Tagged always so --tags can't skip it; reset.yml clears the state it checks.
+# hosts: all, so an unreachable master stops the agents too (any_errors_fatal
+# only covers this play's hosts).
+- name: Refuse to run against an established cluster
+  hosts: all
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tags: always
+  tasks:
+    - name: Fail if --limit leaves out a master
+      ansible.builtin.fail:
+        msg: >-
+          site.yml needs every master ({{ groups['master'] | difference(ansible_play_hosts_all) | join(', ') }}
+          left out) to tell whether the cluster already exists. To add an agent
+          to a live cluster use join-agent.yml.
+      run_once: true
+      when:
+        - not (site_allow_existing_cluster | default(false) | bool)
+        - groups['master'] | difference(ansible_play_hosts_all) | length > 0
+
+    - name: Check for existing k3s server state
+      ansible.builtin.stat:
+        path: /var/lib/rancher/k3s/server/db
+      register: site_k3s_server_db
+      when:
+        - not (site_allow_existing_cluster | default(false) | bool)
+        - inventory_hostname in groups['master']
+
+    - name: Fail if this master already belongs to a cluster
+      ansible.builtin.fail:
+        msg: >-
+          {{ inventory_hostname }} already has k3s server state
+          (/var/lib/rancher/k3s/server/db). site.yml only bootstraps a new
+          cluster; use upgrade-k3s.yml for a live one, join-agent.yml to add
+          an agent. Only after reset.yml, or with
+          -e site_allow_existing_cluster=true if you know why.
+      when:
+        - not (site_allow_existing_cluster | default(false) | bool)
+        - inventory_hostname in groups['master']
+        - site_k3s_server_db.stat.exists
+
 - name: Pre tasks
   hosts: all
   pre_tasks:
@@ -73,6 +118,8 @@
 
 - name: Setup k3s servers
   hosts: master
+  vars_files:
+    - vars/k3s-primary-master.yml
   environment: "{{ proxy_env | default({}) }}"
   roles:
     - role: k3s_server
@@ -80,6 +127,8 @@
 
 - name: Setup k3s agents
   hosts: node
+  vars_files:
+    - vars/k3s-primary-master.yml
   environment: "{{ proxy_env | default({}) }}"
   roles:
     - role: k3s_agent
@@ -87,6 +136,8 @@
 
 - name: Configure k3s cluster
   hosts: master
+  vars_files:
+    - vars/k3s-primary-master.yml
   environment: "{{ proxy_env | default({}) }}"
   roles:
     - role: k3s_server_post
@@ -94,11 +145,13 @@
 
 - name: Storing kubeconfig in the playbook directory
   hosts: master
+  vars_files:
+    - vars/k3s-primary-master.yml
   environment: "{{ proxy_env | default({}) }}"
   tasks:
-    - name: Copying kubeconfig from {{ hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] }} # noqa yaml[line-length]
+    - name: Copying kubeconfig from {{ k3s_primary_master }}
       ansible.builtin.fetch:
         src: "{{ ansible_facts['user_dir'] }}/.kube/config"
         dest: ./kubeconfig
         flat: true
-      when: ansible_facts['hostname'] == hostvars[groups[group_name_master | default('primary-master')][0]]['ansible_facts']['hostname'] # noqa yaml[line-length]
+      when: inventory_hostname == k3s_primary_master

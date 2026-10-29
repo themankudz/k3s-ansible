@@ -2,7 +2,7 @@
 - name: Verify primary Kubernetes API reachability from {{ joining_master }}
   ansible.builtin.wait_for:
     host: >-
-      {{ hostvars[groups[group_name_master | default('master')][0]].k3s_node_ip
+      {{ hostvars[k3s_primary_master].k3s_node_ip
       | split(',') | first }}
     port: 6443
     connect_timeout: 2
@@ -26,7 +26,7 @@
     cmd: >-
       {{ k3s_kubectl_binary | default('k3s kubectl') }} get node
       {{ hostvars[joining_master]['ansible_facts']['hostname'] }}
-  delegate_to: "{{ groups[group_name_master | default('master')][0] }}"
+  delegate_to: "{{ k3s_primary_master }}"
   register: joined_master
   until: joined_master.rc == 0
   retries: "{{ retry_count | default(20) }}"

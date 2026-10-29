@@ -91,7 +91,7 @@
       - "1"
       - -W
       - "1"
-      - "{{ hostvars[groups[group_name_master | default('master')][0]].k3s_node_ip | split(',') | first }}"
+      - "{{ hostvars[k3s_primary_master].k3s_node_ip | split(',') | first }}"
   changed_when: false
   failed_when: false
   no_log: true
@@ -99,7 +99,7 @@
 
 - name: Probe primary Kubernetes API from {{ ansible_facts['hostname'] }}
   ansible.builtin.wait_for:
-    host: "{{ hostvars[groups[group_name_master | default('master')][0]].k3s_node_ip | split(',') | first }}"
+    host: "{{ hostvars[k3s_primary_master].k3s_node_ip | split(',') | first }}"
     port: 6443
     connect_timeout: 1
     timeout: 2

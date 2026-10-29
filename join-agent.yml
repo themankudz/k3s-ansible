@@ -27,11 +27,13 @@
 
 - name: Preflight checks for joining a new agent
   hosts: node
+  vars_files:
+    - vars/k3s-primary-master.yml
   gather_facts: true
   become: false
   any_errors_fatal: true
   vars:
-    join_agent_primary_master: "{{ groups[group_name_master | default('primary-master')][0] }}"
+    join_agent_primary_master: "{{ k3s_primary_master }}"
   tasks:
     - name: Assert the run is limited to the new host(s)
       ansible.builtin.assert:
@@ -120,16 +122,18 @@
 
 - name: Join the new agent
   hosts: node
+  vars_files:
+    - vars/k3s-primary-master.yml
   gather_facts: false
   become: true
   serial: 1
   any_errors_fatal: true
   vars:
-    join_agent_primary_master: "{{ groups[group_name_master | default('primary-master')][0] }}"
+    join_agent_primary_master: "{{ k3s_primary_master }}"
   environment: "{{ proxy_env | default({}) }}"
   tasks:
     # Same file and the same host the agent unit template reads the token from
-    # (hostvars[groups[group_name_master][0]]['token']) -- see upgrade-k3s.yml's
+    # (hostvars[k3s_primary_master]['token']) -- see upgrade-k3s.yml's
     # token play for why it must be the primary master. delegate_to works
     # regardless of --limit.
     - name: Read node-token from the primary master
