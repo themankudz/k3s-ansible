@@ -81,6 +81,36 @@ def check_retry_wiring(task, name):
         fail("{0} is missing delay".format(name))
 
 
+def find_index(tasks, name):
+    for index, entry in enumerate(tasks):
+        if entry.get("name") == name:
+            return index
+    fail("could not find the '{0}' task".format(name))
+    return None
+
+
+def check_rollout_before_cleanup(tasks):
+    # Deleting outdated ReplicaSets before k3s has applied the new manifest
+    # deletes the still-current one; the Deployment recreates it, the bump
+    # scales it to 0, and "Wait for MetalLB resources" can never pass.
+    cleanup_index = find_index(tasks, "Delete outdated metallb replicas")
+    waits = (
+        ("Wait for the MetalLB controller Deployment to carry the target version",
+         "ansible.builtin.shell", "metal_lb_controller_tag_version"),
+        ("Wait for the MetalLB controller to roll out the target version",
+         "ansible.builtin.command", "rollout status deployment/controller"),
+    )
+    previous = -1
+    for name, module, needle in waits:
+        index = find_index(tasks, name)
+        if not previous < index < cleanup_index:
+            fail("'{0}' must run in order, before the outdated replicas are deleted".format(name))
+        previous = index
+        if needle not in tasks[index].get(module, ""):
+            fail("'{0}' does not check {1}".format(name, needle))
+        check_retry_wiring(tasks[index], name)
+
+
 def main():
     task_file = os.path.join(
         repo_root(), "roles", "k3s_server_post", "tasks", "metallb.yml"
@@ -100,6 +130,8 @@ def main():
     check_explicit_get(webhook_task, "Test metallb-system webhook-service endpoint",
                        "get endpoints")
     check_retry_wiring(webhook_task, "Test metallb-system webhook-service endpoint")
+
+    check_rollout_before_cleanup(tasks)
 
     print("MetalLB namespace check regression test passed")
 

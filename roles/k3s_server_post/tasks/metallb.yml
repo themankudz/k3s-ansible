@@ -8,6 +8,42 @@
   with_items: "{{ groups[group_name_master | default('master')] }}"
   run_once: true
 
+# k3s applies the new manifest asynchronously. Cleaning up before it has done
+# so deletes the still-current old ReplicaSet, the Deployment recreates it,
+# and the bump then scales it to 0 -- a stale RS the wait below can never get
+# past (workload-cluster, v0.16.0 -> v0.16.1, 2026-10-29). So wait until the
+# Deployment carries the target tag and has fully rolled out first. Two tasks
+# so a quick tag poll gets the long retry budget and the slow rollout wait
+# doesn't (30 x 240s would hang a broken rollout for two hours).
+- name: Wait for the MetalLB controller Deployment to carry the target version
+  ansible.builtin.shell: |-
+    set -o pipefail
+    image=$({{ k3s_kubectl_binary | default('k3s kubectl') }} --namespace='metallb-system' \
+      get deployment controller -o jsonpath='{.spec.template.spec.containers[0].image}')
+    if [[ "${image}" != *':{{ metal_lb_controller_tag_version }}' ]]; then
+      echo "controller image is '${image}', waiting for {{ metal_lb_controller_tag_version }}" >&2
+      exit 1
+    fi
+  args:
+    executable: /bin/bash
+  changed_when: false
+  register: metallb_controller_image
+  until: metallb_controller_image.rc == 0
+  retries: 30
+  delay: 10
+  run_once: true
+
+- name: Wait for the MetalLB controller to roll out the target version
+  ansible.builtin.command: >-
+    {{ k3s_kubectl_binary | default('k3s kubectl') }} --namespace='metallb-system'
+    rollout status deployment/controller --timeout='{{ metal_lb_available_timeout }}'
+  changed_when: false
+  register: metallb_controller_rollout
+  until: metallb_controller_rollout.rc == 0
+  retries: "{{ download_retries }}"
+  delay: "{{ download_delay }}"
+  run_once: true
+
 - name: Delete outdated metallb replicas
   # Must check every ReplicaSet matching the selector, not just .items[0] (the
   # previous version of this script) — the API doesn't guarantee ordering, and
@@ -28,7 +64,7 @@
       -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.template.spec.containers[0].image}{"\n"}{end}' \
       2>/dev/null \
     | while IFS=$'\t' read -r NAME IMAGE; do
-        if [ -n "${NAME}" ] && [[ "${IMAGE}" != *'{{ metal_lb_controller_tag_version }}'* ]]; then
+        if [ -n "${NAME}" ] && [[ "${IMAGE}" != *':{{ metal_lb_controller_tag_version }}' ]]; then
           {{ k3s_kubectl_binary | default('k3s kubectl') }} --namespace='metallb-system' \
             delete rs "${NAME}" --ignore-not-found
         fi
