@@ -29,3 +29,65 @@
 
 - name: Flush udev rule handlers immediately
   ansible.builtin.meta: flush_handlers
+
+# Stale iSCSI sessions (workload cluster, 2026-11-13..16; docs/node-runbook.md
+# "Stale Longhorn iSCSI sessions"). When an instance-manager pod is replaced
+# while volumes are attached, its pod IP is gone for good, and the kernel's
+# sessions to it start reconnecting. With open-iscsi's default
+# node.session.reopen_max = 0 they reconnect forever. If iscsid then restarts,
+# it re-syncs those sessions and refuses to log them out while they reconnect
+# (open-iscsi 2.1.9 usr/initiator.c:2106, "cannot be terminted because it's
+# trying to reconnect"). Longhorn's logout then fails 10 times on the next
+# attach of that volume to the node, the attach fails, Longhorn recreates the
+# pod every ~2 min, and longhorn-manager floods the logs. Only a reboot clears
+# it. The tasks below remove both halves. NONE of them restarts iscsid, and no
+# handler may: restarting iscsid with broken sessions is the trigger itself.
+
+# needrestart restarted iscsid after unattended libc6 (2026-11-13) and
+# libsystemd (2026-10-15) updates. A pending library update on iscsid is
+# harmless; it picks the new library up at the next reboot.
+- name: Stop needrestart from restarting iscsid
+  ansible.builtin.copy:
+    dest: /etc/needrestart/conf.d/50-longhorn-iscsid.conf
+    content: |
+      # Managed by Ansible (roles/longhorn_node_fix). Never restart iscsid
+      # automatically: a restart makes broken Longhorn iSCSI sessions
+      # impossible to log out until the node reboots.
+      $nrconf{override_rc}{qr(^iscsid\.(service|socket)$)} = 0;
+    owner: root
+    group: root
+    mode: '0644'
+    validate: perl -c %s
+
+# open-iscsi's own package scripts restart iscsid on upgrade (2026-10-09).
+# Keep it out of unattended-upgrades; patch.yml upgrades it one node at a time,
+# and the node should be rebooted afterwards (reboot.yml). apt merges list
+# options across apt.conf.d files, so this adds to any other blacklist.
+- name: Keep open-iscsi out of unattended-upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/51longhorn-no-auto-iscsi
+    content: |
+      // Managed by Ansible (roles/longhorn_node_fix). Upgrading open-iscsi
+      // restarts iscsid; do it with patch.yml + reboot.yml instead.
+      Unattended-Upgrade::Package-Blacklist {
+          "open-iscsi";
+      };
+    owner: root
+    group: root
+    mode: '0644'
+
+# Give up on a session after longhorn_iscsi_reopen_max failed reconnects, so a
+# session to a dead instance-manager IP is destroyed instead of retrying
+# forever. Longhorn's logout skips targets with no session
+# (go-iscsi-helper iscsidev.LogoutTarget checks IsTargetLoggedIn first), so the
+# next attach logs in cleanly. iscsiadm copies this default into each node
+# record when Longhorn discovers the target, i.e. on the next attach of each
+# volume; existing sessions keep their old value until then.
+- name: Limit iSCSI session reconnect attempts
+  ansible.builtin.lineinfile:
+    path: /etc/iscsi/iscsid.conf
+    regexp: '^\s*#?\s*node\.session\.reopen_max\s*='
+    line: "node.session.reopen_max = {{ longhorn_iscsi_reopen_max }}"
+    owner: root
+    group: root
+    mode: '0644'
