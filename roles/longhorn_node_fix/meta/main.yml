@@ -4,6 +4,14 @@ argument_specs:
     short_description: Longhorn node fixes
     description: >
       Applies OS-level fixes required for stable Longhorn iSCSI operation on
-      cluster nodes. Currently prevents probe-bcache from hanging on Longhorn
-      iSCSI volumes, which can cascade into node lockups when iSCSI sessions
-      are disrupted.
+      cluster nodes. Prevents probe-bcache from hanging on Longhorn iSCSI
+      volumes, which can cascade into node lockups when iSCSI sessions are
+      disrupted, and stops stale iSCSI sessions from becoming impossible to
+      log out (no automatic iscsid restarts, finite reconnect attempts).
+    options:
+      longhorn_iscsi_reopen_max:
+        type: int
+        default: 30
+        description: >
+          node.session.reopen_max written to /etc/iscsi/iscsid.conf: failed
+          reconnects before iscsid destroys a session. 0 retries forever.

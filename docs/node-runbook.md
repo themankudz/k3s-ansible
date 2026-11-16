@@ -262,3 +262,47 @@ kubectl --context workload delete pod -n signoz-monitoring signoz-api-probe
 If log counts are zero for *everything*, not just node logs, check the SigNoz
 collector for `couldn't PrepareBatch for inserting resource fingerprints` —
 that's the logs-exporter deadlock; run `homelab-k3s/signoz/otel-logs-queue-recovery.sh`.
+
+---
+
+## 8. Stale Longhorn iSCSI sessions (attach loop, longhorn-manager log flood)
+
+Seen on the workload cluster 2026-11-06 and 2026-11-13..16. Symptoms: one
+volume never attaches on one node; its pod is recreated every ~2 min
+(`FailedAttachVolume ... DeadlineExceeded`); longhorn-manager logs
+`failed to init frontend ... failed to stop iSCSI device: failed to logout
+target ... failed after 10 attempts to refresh session` hundreds of thousands
+of times an hour. That flood wedged SigNoz's logs exporter twice.
+
+Mechanism:
+1. An instance-manager pod is replaced while volumes are attached (on
+   2026-11-13 after k3s crash-restarts). Its pod IP is gone for good, and the
+   kernel's sessions to it start reconnecting. With the open-iscsi default
+   `node.session.reopen_max = 0` they reconnect forever.
+2. iscsid restarts (needrestart after an unattended libc6/libsystemd update, or
+   an open-iscsi upgrade). On start it re-syncs those sessions, and while they
+   reconnect it refuses to log them out: `session N cannot be terminted because
+   it's trying to reconnect: try again later` (open-iscsi 2.1.9
+   `usr/initiator.c:2106`).
+3. The next attach of that volume on that node needs that logout, so it fails.
+
+Check, on the node:
+
+```bash
+iscsiadm -m session -P1 | grep -E 'Target:|Current Portal|Internal iscsid Session State'
+# stale = "Internal iscsid Session State: REOPEN" to a portal IP that is not
+# the node's current instance-manager pod IP:
+kubectl --context workload -n longhorn-system get pods -l longhorn.io/component=instance-manager -o wide
+journalctl -u iscsid -n 20 --no-pager    # "cannot be terminted" / "No route to host"
+```
+
+Fix: drain and reboot the node (`reboot.yml --limit <node>`). Logout,
+`iscsiadm -m session -r <sid> -u` and restarting iscsid all fail in this state.
+
+Prevention (`roles/longhorn_node_fix`): needrestart never restarts iscsid,
+open-iscsi is kept out of unattended-upgrades (upgrade it with `patch.yml`,
+then `reboot.yml`), and `node.session.reopen_max = 30`, so iscsid destroys a
+session to a dead portal after roughly 1.5 to 9 minutes. Longhorn's logout
+skips targets that have no session, so the next attach is clean. The new
+`reopen_max` reaches a volume's node record at its next attach on that node.
+Check it with `iscsiadm -m node -T <iqn> | grep reopen_max`.

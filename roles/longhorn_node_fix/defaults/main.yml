@@ -1,0 +1,9 @@
+---
+# Failed reconnects before iscsid gives up on a session and destroys it.
+# 0 means retry forever (the open-iscsi default). A failed connect retries
+# every 3s and a silent target costs up to the login timeout (15s in Ubuntu's
+# iscsid.conf), so 30 gives up after roughly 1.5 to 9 minutes. That outlasts
+# node.session.timeo.replacement_timeout (120s), so iscsid only gives up after
+# the kernel has already failed the volume's I/O. Any successful reconnect
+# resets the count.
+longhorn_iscsi_reopen_max: 30
